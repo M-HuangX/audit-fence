@@ -1,6 +1,8 @@
 # audit-fence
 
-**Programmatic enforcement for LLM agent evidence. Search-verified citations. Zero hallucinated evidence.**
+**Your AI writes a report. Another AI audits it. This library makes sure the auditor can't fake the evidence.**
+
+Code-level enforcement that verifies every citation against actual search results — not memory, not paraphrase, not confabulation. No search, no evidence.
 
 <p>
   <img src="https://img.shields.io/badge/python-3.10+-blue?logo=python&logoColor=white" alt="Python"/>
@@ -10,50 +12,95 @@
 
 ---
 
-## The Problem
+<!-- TODO: Replace with generated overview image -->
+<p align="center">
+  <img src="docs/overview.png" alt="Three levels of citation verification — from self-declared to enforced audit" width="100%"/>
+</p>
 
-AI agents are increasingly used to generate reports in finance, legal, medical, and other regulated industries. These reports contain factual claims — numbers, dates, metrics — and stakeholders need to know where each claim came from. The standard approach: let the LLM cite its own sources as it writes.
+## Why This Exists
 
-The problem is that **citations are self-declared**. The same model that might hallucinate "revenue grew 26%" is also the one claiming "Source: get_income_statement". When the context window is long and packed with data, the probability of hallucinated citations rises sharply — and you have no way to tell which ones are real.
+AI agents increasingly generate reports that humans act on — financial analysis, legal summaries, medical assessments, compliance reviews. These reports contain factual claims, and stakeholders in regulated industries need to know: **where exactly did each number come from?**
 
-You can't manually verify every report. The intuitive solution is to use a second AI — an **audit agent** — to independently verify the first agent's citations against raw data. But the audit agent is itself an LLM. It can fabricate evidence just as easily: "I checked line 42 and it says $5.1B" — did it actually check, or is it confabulating?
+Everyone agrees reports need citations. The question is how rigorous those citations really are.
 
-## The Solution
+### Self-declared citations — no verification
 
-**audit-fence** enforces a simple rule at the code level: **no search, no evidence**.
+Most AI tools today — ChatGPT, Gemini, Deep Research, Perplexity — let the LLM cite its own sources as it writes. The model generates *"revenue grew 26% [Source: income\_statement]"* in a single pass. The same model that might hallucinate the number is also declaring the source.
+
+There is **no verification mechanism**. You trust the model's claim about what it retrieved, or you don't. For a blog post, that's fine. For a financial report that a compliance officer must sign off on, it's not.
+
+### Generation-time validation — existence, not correspondence
+
+Tools like [instructor](https://github.com/jxnl/instructor) improve on this with structured output validation: every quote the LLM produces must be a verified substring of the source text. If the citation doesn't exist in the original document, the model is asked to retry.
+
+This is better — at least the quote is real. But it has two blind spots:
+
+**Existence ≠ correspondence.** The source text may contain thousands of lines. A substring check proves the quote *exists* somewhere in the document. It cannot prove it's the *right* quote for *this* claim. The document might contain "26%" in five different contexts — a different metric, a different entity, a different time period. The model picks one. The substring check passes. The attribution is wrong. This failure mode is **invisible** to any system that only checks "does this string appear somewhere in the text."
+
+**Writing and citing are separate cognitive tasks.** Asking an LLM to simultaneously compose analysis and attach precise citations degrades both. Independent engineering teams have found that separating claim generation from evidence retrieval — write first, then trace each claim back to its source — [reduces hallucination from ~30% to under 1%](https://medium.com/lets-code-future/how-to-make-llms-cite-their-sources-and-why-rag-isnt-enough-86a9b107feed). The model performs better on focused, single-purpose work: *"find evidence for this specific claim"* produces far more reliable results than *"write a report and cite everything as you go."*
+
+### The missing piece — who audits the auditor?
+
+The right architecture is clear: let the writer write freely, then send an **independent audit agent** to verify every claim against the raw data after the fact.
+
+But this just moves the problem. The audit agent is itself an LLM. When its context window is packed with the report, raw data, and reasoning traces, it can fabricate evidence just as easily: *"I checked line 42 and it says $5.1B."* Did it actually check, or is it confabulating from a 100K-token context?
+
+Generation-time validators can't help here — the auditor isn't writing a report with structured output. It's searching evidence and submitting findings through tool calls. You need a different kind of constraint: one that operates at the **tool level**, forcing the auditor to prove it actually searched before it can record anything.
+
+**This is what audit-fence does.**
+
+---
+
+## What audit-fence Does
+
+One rule, enforced by code: **no search, no evidence.**
 
 ```
-Without audit-fence:
-  Agent → "I found X in the data"  →  Record citation  →  ✓ accepted (unverified)
+Without enforcement:
+  Audit agent → "I found X in the data"  →  Record  →  ✓ accepted (unverified)
 
 With audit-fence:
-  Agent → search("X")              →  Result recorded to history
-  Agent → submit(evidence="X...")  →  Verify evidence ∈ search history  →  ✓ or REJECTED
+  Audit agent → search("X")              →  Result recorded to history
+  Audit agent → submit(evidence="X...")  →  Verify evidence ∈ search history  →  ✓ or REJECTED
 ```
 
-The agent's evidence submission tool **programmatically validates** that the submitted evidence is a character-level substring of an actual search result. Not semantic similarity — exact text match. If the agent didn't search for it, or if it paraphrases/fabricates the result, the submission is rejected and the rejection is logged.
+Two decorators. Three validation checks. Zero dependencies.
 
-This is not an arbitrary constraint. It exploits a known property of transformer attention: when a context window is packed with a report, source data, and reasoning traces, **information in the middle is most prone to hallucination** (the "lost in the middle" effect). By forcing a fresh search before each evidence submission, the relevant data is placed at the **tail of the context window** — where attention is strongest. The enforcement doesn't just validate; it structurally reduces the conditions under which hallucination occurs.
+**`@fence.track`** wraps your search tool. Every search result is recorded in an internal history.
 
-## Why Post-Hoc Audit, Not Generation-Time Validation?
+**`@fence.enforce`** wraps your evidence submission tool. Before the function executes, it validates:
 
-Some tools validate citations at generation time — requiring every quote the LLM produces to be a substring of the source text (e.g., [instructor](https://github.com/jxnl/instructor)'s `substring_quote` pattern). This is useful for structured extraction. But it is insufficient for report-level auditing, for three reasons:
+| Check | What it validates | On failure |
+|-------|------------------|------------|
+| **Search history** | At least one search has been performed | Rejected: "No search calls recorded" |
+| **Evidence match** | Submitted evidence is a character-level substring of a recent search result | Rejected: "Evidence does not match any recent search result" |
+| **Source text** *(optional)* | Claim text exists in the source document being audited | Rejected: "Claim text not found in the source document" |
 
-**Existence ≠ Correspondence.** A substring check proves a quote *exists* in the source. It cannot prove it's the *right* quote for the claim. When the context window contains thousands of lines, the model may cite a real passage containing "26%" — but from a different metric, a different entity, a different time period. The citation passes validation. The attribution is wrong. This failure mode is invisible to any system that only checks "does this string appear somewhere in the text."
+If any check fails, the function is **not called**. An `ERROR` string is returned (which ReAct agents naturally retry on), and the rejection is logged with timestamp, tool name, and reason — a compliance officer can inspect not just what was accepted, but what was rejected and why.
 
-**Analysis and citation should be separate tasks.** Asking an LLM to simultaneously write analysis and attach precise citations degrades both — it is multitasking in a domain where precision matters. Independent engineering teams have found that separating claim generation from evidence retrieval — first write, then trace each claim back to its source — [reduces hallucination rates from ~30% to under 1%](https://medium.com/lets-code-future/how-to-make-llms-cite-their-sources-and-why-rag-isnt-enough-86a9b107feed). The LLM performs better on focused, single-purpose work: "find evidence for *this specific claim*" yields far more reliable citations than "write a report and cite everything as you go."
+### Why this works — it's not just validation
 
-**Who audits the auditor?** Generation-time validators trust the model: if it produces a valid substring, the citation is accepted. In a post-hoc audit, the *auditor itself* is an LLM that can fabricate evidence just as easily. audit-fence adds a constraint that no generation-time tool provides: it verifies the audit agent's evidence comes from searches it actually performed — not from memory, paraphrase, or confabulation.
+Forcing a fresh search before each evidence submission isn't just a policy check. It exploits a known property of transformer attention.
 
-| | Generation-time validators | audit-fence |
-|---|---|---|
-| **When** | During report writing | After the report exists |
-| **Who is constrained** | The writer (report-generating LLM) | The auditor (independent verification agent) |
-| **What is validated** | Quote ∈ static source text fed to the model | Evidence ∈ agent's real, recorded search history |
-| **On failure** | Retry generation (goal: produce output) | Reject + log (goal: determine ground truth) |
-| **Prerequisite** | You control the generation process | Report + generation traces + raw data all exist |
+When an audit agent's context window is packed with the report, source data, and reasoning traces, **information in the middle is most prone to hallucination** — the "[lost in the middle](https://arxiv.org/abs/2307.03172)" effect. If the evidence the agent needs sits in the middle of a long context, the model is more likely to misquote, misattribute, or fabricate.
 
-These approaches are complementary. You can use structured output validation during generation *and* audit-fence for post-hoc verification. audit-fence doesn't help you write better citations — it helps you **verify** them, with a constraint that even the verifier cannot bypass.
+By requiring a `search()` call before every `submit()`, audit-fence forces the relevant evidence to the **tail of the context window** — where attention is strongest and hallucination is least likely. The enforcement doesn't just catch fabrication after the fact; it **structurally reduces the conditions under which fabrication occurs**.
+
+### How audit-fence compares
+
+| | Self-declared | Generation-time validated | **Enforced audit** |
+|---|---|---|---|
+| **Examples** | ChatGPT, Gemini, Deep Research | instructor, Pydantic validators | **audit-fence** |
+| **Verification** | None | Quote ∈ source text | Evidence ∈ real search history |
+| **Who is checked** | Nobody | The writer | The auditor |
+| **When** | During generation | During generation | After the report exists |
+| **Catches fabrication** | No | Partially (existence only) | Yes (must prove search happened) |
+| **Catches wrong attribution** | No | No | Reduced (targeted search per claim) |
+| **Audit trail** | None | Retry silently | Full rejection log (JSONL) |
+
+These approaches are complementary — you can use structured output validation during generation *and* audit-fence for post-hoc verification. They solve different problems at different stages.
+
+---
 
 ## Quick Start
 
@@ -69,7 +116,7 @@ fence = Fence()
 @fence.track
 def search(query: str) -> str:
     """Your search tool — results are automatically tracked."""
-    return my_search_backend(query)
+    return my_search_backend(query)  # ripgrep, SQL, API call, etc.
 
 @fence.enforce
 def record_citation(claim: str, evidence: str) -> dict:
@@ -91,38 +138,9 @@ record_citation(claim="Revenue $5.1B", evidence="fabricated text not in results"
 # => ERROR: Evidence does not match any recent search result.
 ```
 
-## How It Works
+See [`examples/`](examples/) for complete, runnable scripts including a [financial report audit](examples/financial_report.py) and [LangGraph integration](examples/langchain_agent.py).
 
-audit-fence has two decorators and three validation checks:
-
-### `@fence.track` — Record search results
-
-Wraps any search function. Every call's return value is appended to an internal history. The function's behavior is unchanged — the decorator only adds tracking.
-
-### `@fence.enforce` — Validate before submission
-
-Wraps any evidence submission function. Before the function executes, three checks run:
-
-| Check | What it validates | Rejection message |
-|-------|------------------|-------------------|
-| **Search history** | At least one `@fence.track` call has been made | "No search calls recorded" |
-| **Evidence match** | `evidence` parameter is a substring of a recent search result | "Evidence does not match any recent search result" |
-| **Source text** *(optional)* | `claim` parameter exists in the source document | "Claim text not found in the source document" |
-
-If any check fails, the function is **not called**. An `"ERROR: ..."` string is returned instead, and the rejection is logged with timestamp, tool name, and reason.
-
-### Rejection logging
-
-Every rejected submission is recorded:
-
-```python
-fence.rejections
-# [{"tool": "record_citation", "content": "...", "reason": "...", "timestamp": ...}]
-
-fence.save_log("enforcement_log.jsonl")
-```
-
-A compliance officer can review not just what was accepted, but what was rejected and why.
+---
 
 ## Configuration
 
@@ -142,7 +160,7 @@ def submit(claim: str, grep_output: str) -> dict: ...
 
 ### Source text verification
 
-Optionally verify that the claim exists in a source document (e.g., the report being audited):
+Optionally verify that the claim text exists in the source document being audited:
 
 ```python
 report = open("report.md").read()
@@ -151,16 +169,29 @@ report = open("report.md").read()
 def submit(claim_in_report: str, evidence: str) -> dict: ...
 ```
 
-`source_text` can also be a callable (for dynamic content):
+`source_text` can be a callable for dynamic content:
 
 ```python
 @fence.enforce(claim_param="claim", source_text=lambda: load_latest_report())
 def submit(claim: str, evidence: str) -> dict: ...
 ```
 
+### Rejection logging
+
+Every rejected submission is recorded:
+
+```python
+fence.rejections
+# [{"tool": "record_citation", "content": "...", "reason": "...", "timestamp": ...}]
+
+fence.save_log("enforcement_log.jsonl")
+```
+
+---
+
 ## Framework Integration
 
-audit-fence has **zero dependencies**. The decorators produce normal Python functions that work with any framework's tool system.
+audit-fence has **zero dependencies**. The decorators produce standard Python functions that compose with any framework's tool system.
 
 ### LangGraph / LangChain
 
@@ -202,6 +233,8 @@ for fn in fence.tools:
     register_tool(fn.__name__, fn, fn.__doc__)
 ```
 
+---
+
 ## Examples
 
 | Example | Description |
@@ -212,9 +245,7 @@ for fn in fence.tools:
 
 ## Origin
 
-audit-fence is extracted from [**Firn**](https://github.com/M-HuangX/Firn), a multi-agent financial analysis system with a 3-phase audit pipeline. In Firn, the enforcement mechanism is tightly integrated with a financial-domain audit workflow (specialist agents, trace directories, verdict merging). audit-fence isolates the core enforcement pattern — search tracking + evidence validation + rejection logging — as a standalone, domain-agnostic library.
-
-The enforcement has been battle-tested in Firn across hundreds of audit runs, where it consistently prevents the audit agent from fabricating or paraphrasing evidence.
+audit-fence is extracted from [**Firn**](https://github.com/M-HuangX/Firn), a multi-agent financial analysis system with a full 3-phase audit pipeline, 1000+ tests, and deterministic verdict assignment. In Firn, the enforcement mechanism is integrated with a financial-domain workflow — specialist agents, trace directories, verdict merging. audit-fence isolates the core enforcement pattern as a standalone, domain-agnostic library.
 
 ## License
 
