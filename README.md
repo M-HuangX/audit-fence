@@ -46,7 +46,7 @@ These tools provide a form of citation quality at generation time, but they don'
 
 The right architecture is clear: let the writer write freely, then send an **independent audit agent** to verify every claim against the raw data after the fact.
 
-But this just moves the problem. The audit agent is itself an LLM. When its context window is packed with the report, raw data, and reasoning traces, it can fabricate evidence just as easily: *"I checked line 42 and it says $5.1B."* Did it actually check, or is it confabulating from a 100K-token context?
+But this just moves the problem. The audit agent is itself an LLM. When its context window is packed with the report, source data, and reasoning traces, it can fabricate evidence just as easily: *"I checked line 42 and it says $5.1B."* Did it actually check, or is it confabulating from a 100K-token context?
 
 Generation-time validators can't help here — the auditor isn't writing a report with structured output. It's searching for evidence and building a trace from each claim to its source. You need a constraint that makes **the tracing process itself trustworthy**: one that operates at the tool level, forcing the agent to prove it actually searched before it can record anything.
 
@@ -137,13 +137,15 @@ record_citation(claim="Revenue $5.1B", evidence="<paste from search output>")
 # Blocked: submit without searching
 fence.reset()
 record_citation(claim="Revenue $5.1B", evidence="anything")
-# => ERROR: No search calls recorded. You must call a search tool first.
+# => ERROR: No search calls recorded. You must call a search tool first to find evidence before submitting.
 
 # Blocked: submit fabricated evidence
 search("revenue")
 record_citation(claim="Revenue $5.1B", evidence="fabricated text not in results")
-# => ERROR: Evidence does not match any recent search result.
+# => ERROR: Evidence does not match any recent search result. Call a search tool first, then paste the matching output into the evidence field.
 ```
+
+Both `@fence.track` and `@fence.enforce` transparently support async functions — no separate API needed.
 
 See [`examples/`](examples/) for complete, runnable scripts including a [financial report audit](examples/financial_report.py) and [LangGraph integration](examples/langchain_agent.py).
 
@@ -153,8 +155,12 @@ See [`examples/`](examples/) for complete, runnable scripts including a [financi
 
 ```python
 fence = Fence(
+    name="audit_r1",          # Optional identifier (for multi-agent, logging)
     min_evidence_length=20,   # Minimum chars for evidence (default: 20)
     history_window=20,        # How many recent searches to check against (default: 20)
+    history_limit=100,        # Max total records kept in memory (default: unlimited)
+    context={"ticker": "AAPL", "phase": "audit"},  # Attached to every rejection log entry
+    track_all=False,          # When True, wrap() tracks ALL tools (see Soft Enforcement)
 )
 ```
 
@@ -189,7 +195,7 @@ Every rejected submission is recorded:
 
 ```python
 fence.rejections
-# [{"tool": "record_citation", "content": "...", "reason": "...", "timestamp": ...}]
+# [{"tool": "record_citation", "content": "...", "reason": "...", "timestamp": ..., "context": {...}}]
 
 fence.save_log("enforcement_log.jsonl")
 ```
@@ -198,9 +204,45 @@ fence.save_log("enforcement_log.jsonl")
 
 ## Framework Integration
 
-audit-fence has **zero dependencies**. The decorators produce standard Python functions that compose with any framework's tool system.
+audit-fence has **zero dependencies**. It provides two integration paths: `wrap()` for adding enforcement to existing tool lists, and decorators for new projects.
 
-### LangGraph / LangChain
+### wrap() — for existing codebases (recommended)
+
+If you already have tools defined, `wrap()` adds enforcement without modifying any function definitions. Pass glob patterns to classify tools by name:
+
+```python
+from audit_fence import Fence
+
+fence = Fence()
+
+# Your existing tools — no changes needed
+existing_tools = [search_web, get_financials, analyze_data, write_report]
+
+# One call: classify by name pattern, get back enforced tools
+protected_tools = fence.wrap(
+    existing_tools,
+    search=["search_*", "get_*"],     # these get tracked
+    submit=["write_*"],               # these get enforced
+)
+
+agent = create_react_agent(llm, protected_tools)
+```
+
+Tools matching `search` patterns are tracked (results recorded to history). Tools matching `submit` patterns are enforced (evidence validated before execution). Unmatched tools pass through unchanged.
+
+You can also match by function reference instead of name:
+
+```python
+protected_tools = fence.wrap(
+    existing_tools,
+    search=[search_web, get_financials],
+    submit=[write_report],
+)
+```
+
+### Decorators — for new projects
+
+When building tools from scratch, decorators express intent at the definition site:
 
 ```python
 from langchain_core.tools import tool
@@ -220,7 +262,6 @@ def record_citation(claim: str, evidence: str) -> str:
     """Record a citation. evidence must match a recent search result."""
     return json.dumps({"claim": claim, "status": "recorded"})
 
-# Use directly with create_react_agent
 agent = create_react_agent(llm, [search_evidence, record_citation])
 ```
 
@@ -239,6 +280,177 @@ tools_schema = [describe_function(fn) for fn in fence.tools]
 for fn in fence.tools:
     register_tool(fn.__name__, fn, fn.__doc__)
 ```
+
+---
+
+## Multi-Agent Enforcement
+
+A single Fence works for one agent. But production systems often have multiple agents — specialists that search, a core agent that synthesizes, an auditor that verifies. When the auditor cites evidence that a specialist found, which Fence's history should it check against?
+
+The answer: **`fence.link(upstream)`** — one primitive that declares "this fence can cite evidence from that fence's history."
+
+<!-- TODO: multi-agent diagram -->
+
+### Hierarchical — manager cites workers
+
+```python
+from audit_fence import Fence
+
+worker_a = Fence(name="worker_a")
+worker_b = Fence(name="worker_b")
+manager = Fence(name="manager")
+
+manager.link(worker_a, worker_b)
+
+# Workers search independently
+tools_a = worker_a.wrap(worker_a_tools, search=["search_*"])
+tools_b = worker_b.wrap(worker_b_tools, search=["search_*"])
+
+# Manager's submit tool validates against its own history
+# PLUS both workers' histories
+manager_tools = manager.wrap(
+    [search_summary, write_report],
+    search=["search_*"],
+    submit=["write_*"],
+)
+```
+
+When `write_report` runs, enforcement checks the manager's own search history plus all linked upstream histories. If the evidence appeared in any worker's search results, it passes.
+
+### Pipeline — transitive evidence flow
+
+```python
+researcher = Fence(name="researcher")
+enricher = Fence(name="enricher")
+reporter = Fence(name="reporter")
+
+enricher.link(researcher)    # enricher can cite researcher
+reporter.link(enricher)      # reporter can cite enricher AND researcher (transitive)
+```
+
+Links are transitive. The reporter never directly links to the researcher, but because the enricher does, the reporter sees the full chain. Each stage's enforcement validates against the accumulated history of all stages before it.
+
+### Production — multi-specialist audit (Firn)
+
+A real-world topology from [Firn](https://github.com/M-HuangX/Firn), the financial analysis system audit-fence was extracted from. Four specialist agents search raw data, a core agent writes the report, and parallel audit agents verify claims:
+
+```python
+from audit_fence import Fence, FenceGroup
+
+group = FenceGroup()
+
+# Specialist agents (each searches independently)
+fund = group.create("fundamental")
+tech = group.create("technical")
+value = group.create("value")
+macro = group.create("macro")
+
+# R1 audit: each auditor is restricted to one specialist
+r1_fund = group.create("r1_fundamental")
+r1_fund.link(fund)     # can only cite fundamental's searches
+
+r1_tech = group.create("r1_technical")
+r1_tech.link(tech)     # can only cite technical's searches
+
+# R2 audit: cross-specialist verification
+r2 = group.create("r2_specialist")
+r2.link(fund, tech, value, macro)   # can cite all four
+
+# After audit completes — unified view
+group.save_log("audit/enforcement_log.jsonl")
+print(f"Total rejections: {len(group.all_rejections)}")
+```
+
+The key insight: each R1 auditor is **isolated** to its specialist. It cannot accidentally cite evidence from a different specialist's search history. The R2 auditor intentionally sees all four. The topology encodes the audit policy.
+
+### FenceGroup
+
+`FenceGroup` is optional convenience — you can always create and link Fences directly. It provides named lookup, bulk operations, and group-level snapshot/restore:
+
+```python
+group = FenceGroup()
+fund = group.create("fundamental", min_evidence_length=20)
+tech = group.create("technical", min_evidence_length=20)
+
+# Named access
+group["fundamental"].rejections
+
+# Bulk operations
+group.all_rejections       # sorted by timestamp across all fences
+group.all_history          # combined search history
+group.save_log("audit.jsonl")
+group.reset()
+```
+
+---
+
+## Soft Enforcement
+
+Not every agent has explicit submit tools. Some agents search, reason, and produce a final text response. For these, audit-fence provides **soft enforcement**: track all tool calls, then validate the output after the fact.
+
+```python
+from audit_fence import Fence
+
+fence = Fence(track_all=True)
+
+# wrap() with track_all and no patterns → every tool is tracked
+tools = fence.wrap(existing_tools)
+
+agent = create_react_agent(llm, tools)
+result = await agent.ainvoke({"messages": [HumanMessage(content="Analyze AAPL")]})
+
+# Post-hoc: check which quoted passages in the report match search history
+report = result["messages"][-1].content
+validation = fence.validate_output(report)
+```
+
+`validate_output` extracts quoted passages from the text and checks each against search history. It returns a `ValidationResult`:
+
+```python
+validation.found       # ["revenue was $5.1B in FY2025", ...]
+validation.not_found   # ["fabricated quote not in history", ...]
+validation.coverage    # 0.85 (fraction of quotes that matched)
+validation.ok          # True if all quotes matched
+validation.total       # total number of quoted passages examined
+```
+
+This works with multi-agent topologies too — `validate_output` traverses upstream links, so a manager fence validates against its own and all linked workers' histories.
+
+---
+
+## Persistence
+
+Fence state can be serialized for compliance audit trails that survive process restarts.
+
+### Single fence
+
+```python
+import json
+
+# Save
+state = fence.snapshot()
+with open("fence_state.json", "w") as f:
+    json.dump(state, f)
+
+# Restore
+with open("fence_state.json") as f:
+    restored = Fence.restore(json.load(f))
+```
+
+### FenceGroup — preserves links
+
+```python
+# Save entire topology (fences + link relationships)
+state = group.snapshot()
+with open("group_state.json", "w") as f:
+    json.dump(state, f)
+
+# Restore — all fences and their links are reconstructed
+with open("group_state.json") as f:
+    restored_group = FenceGroup.restore(json.load(f))
+```
+
+The snapshot captures search history, rejections, configuration, and link topology. A compliance officer can load yesterday's audit state and inspect the full evidence trail.
 
 ---
 
