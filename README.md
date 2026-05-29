@@ -1,8 +1,8 @@
 # audit-fence
 
-**Your AI writes a report. Another AI audits it. This library makes sure the auditor can't fake the evidence.**
+**Your AI writes a report. audit-fence traces every claim back to its source — and proves the trace is real.**
 
-Code-level enforcement that verifies every citation against actual search results — not memory, not paraphrase, not confabulation. No search, no evidence.
+Programmatic traceability for AI-generated reports. Every step verified, every rejection logged. No search, no evidence.
 
 <p>
   <img src="https://img.shields.io/badge/python-3.10+-blue?logo=python&logoColor=white" alt="Python"/>
@@ -20,13 +20,13 @@ Code-level enforcement that verifies every citation against actual search result
 
 AI agents increasingly generate reports that humans act on — financial analysis, legal summaries, medical assessments, compliance reviews. These reports contain factual claims, and stakeholders in regulated industries need to know: **where exactly did each number come from?**
 
-Everyone agrees reports need citations. The question is how rigorous those citations really are.
+Everyone agrees reports need citations. The real question is: **can you trace each citation back to source data, and can you prove that trace is real?**
 
-### Self-declared citations — no verification
+### Self-declared citations — no traceable chain
 
 Most AI tools today — ChatGPT, Gemini, Deep Research, Perplexity — let the LLM cite its own sources as it writes. The model generates *"revenue grew 26% [Source: income\_statement]"* in a single pass. The same model that might hallucinate the number is also declaring the source.
 
-There is **no verification mechanism**. You trust the model's claim about what it retrieved, or you don't. For a blog post, that's fine. For a financial report that a compliance officer must sign off on, it's not.
+There is **no traceable chain** from claim to source data. The citation is an assertion, not a verifiable link. For a blog post, that's fine. For a financial report that a compliance officer must sign off on, it's not.
 
 ### Generation-time validation — existence, not correspondence
 
@@ -38,13 +38,15 @@ This is better — at least the quote is real. But it has two blind spots:
 
 **Writing and citing are separate cognitive tasks.** Asking an LLM to simultaneously compose analysis and attach precise citations degrades both. Independent engineering teams have found that separating claim generation from evidence retrieval — write first, then trace each claim back to its source — [reduces hallucination from ~30% to under 1%](https://medium.com/lets-code-future/how-to-make-llms-cite-their-sources-and-why-rag-isnt-enough-86a9b107feed). The model performs better on focused, single-purpose work: *"find evidence for this specific claim"* produces far more reliable results than *"write a report and cite everything as you go."*
 
+These tools provide a form of citation quality at generation time, but they don't produce a **traceable audit chain** — there's no independent verification step, no record of what was searched, no log of what was rejected.
+
 ### The missing piece — who audits the auditor?
 
 The right architecture is clear: let the writer write freely, then send an **independent audit agent** to verify every claim against the raw data after the fact.
 
 But this just moves the problem. The audit agent is itself an LLM. When its context window is packed with the report, raw data, and reasoning traces, it can fabricate evidence just as easily: *"I checked line 42 and it says $5.1B."* Did it actually check, or is it confabulating from a 100K-token context?
 
-Generation-time validators can't help here — the auditor isn't writing a report with structured output. It's searching evidence and submitting findings through tool calls. You need a different kind of constraint: one that operates at the **tool level**, forcing the auditor to prove it actually searched before it can record anything.
+Generation-time validators can't help here — the auditor isn't writing a report with structured output. It's searching for evidence and building a trace from each claim to its source. You need a constraint that makes **the tracing process itself trustworthy**: one that operates at the tool level, forcing the agent to prove it actually searched before it can record anything.
 
 **This is what audit-fence does.**
 
@@ -52,7 +54,7 @@ Generation-time validators can't help here — the auditor isn't writing a repor
 
 ## What audit-fence Does
 
-One rule, enforced by code: **no search, no evidence.**
+audit-fence traces every claim in an AI-generated report back to its source data — and ensures the trace itself is trustworthy. One rule, enforced by code: **no search, no evidence.**
 
 ```
 Without enforcement:
@@ -91,17 +93,17 @@ By requiring a `search()` call before every `submit()`, audit-fence forces the r
 
 ### How audit-fence compares
 
-| | Self-declared | Generation-time validated | **Enforced audit** |
+| | Self-declared | Generation-time validated | **Enforced tracing** |
 |---|---|---|---|
 | **Examples** | ChatGPT, Gemini, Deep Research | instructor, Pydantic validators | **audit-fence** |
-| **Verification** | None | Quote ∈ source text | Evidence ∈ real search history |
-| **Who is checked** | Nobody | The writer | The auditor |
+| **Traceability** | None — citation is an assertion | Partial — quote exists in source | Claim → search result → source data |
+| **Who is constrained** | Nobody | The writer | The agent doing the tracing |
 | **When** | During generation | During generation | After the report exists |
-| **Catches fabrication** | No | Partially (existence only) | Yes (must prove search happened) |
-| **Catches wrong attribution** | No | No | Reduced (targeted search per claim) |
+| **Prevents fabricated evidence** | No | Partially (existence only) | Yes (must prove search happened) |
+| **Reduces wrong attribution** | No | No | Yes (targeted search per claim) |
 | **Audit trail** | None | Retry silently | Full rejection log (JSONL) |
 
-These approaches are complementary — you can use structured output validation during generation *and* audit-fence for post-hoc verification. They solve different problems at different stages.
+These approaches are complementary. Generation-time validation improves output quality; audit-fence provides the traceable evidence chain after the fact. Different stages, different guarantees.
 
 ---
 
