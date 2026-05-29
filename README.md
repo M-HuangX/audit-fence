@@ -12,9 +12,8 @@ Code-level enforcement that verifies every citation against actual search result
 
 ---
 
-<!-- TODO: Replace with generated overview image -->
 <p align="center">
-  <img src="docs/overview.png" alt="Three levels of citation verification — from self-declared to enforced audit" width="100%"/>
+  <img src="docs/overview.png" alt="audit-fence: from self-declared citations to enforced audit" width="100%"/>
 </p>
 
 ## Why This Exists
@@ -65,6 +64,10 @@ With audit-fence:
 ```
 
 Two decorators. Three validation checks. Zero dependencies.
+
+<p align="center">
+  <img src="docs/mechanism.png" alt="How audit-fence enforces evidence verification — search, match, log" width="100%"/>
+</p>
 
 **`@fence.track`** wraps your search tool. Every search result is recorded in an internal history.
 
@@ -242,6 +245,19 @@ for fn in fence.tools:
 | [`minimal.py`](examples/minimal.py) | Core pattern in 15 lines |
 | [`financial_report.py`](examples/financial_report.py) | Financial report audit with source text verification |
 | [`langchain_agent.py`](examples/langchain_agent.py) | Integration with LangGraph / LangChain |
+
+## Scope and Limitations
+
+Honesty about what a tool does and doesn't do matters — especially in compliance contexts.
+
+| | Status | Detail |
+|---|---|---|
+| **Prevents fabrication** | Solved | The auditor cannot record evidence it never searched for. Submission without a matching search result is programmatically rejected. |
+| **Improves attribution accuracy** | Improved | Forcing a targeted search per claim is structurally better than matching against an entire static document — the search result is specific to the claim being verified. |
+| **Guarantees correct attribution** | Not yet solved | The agent could still pick the wrong match from valid search results — a passage that is real but corresponds to a different claim. This is the "existence ≠ correspondence" problem. audit-fence reduces it; it does not eliminate it. |
+| **Proves causality** | Open research | Tracing a number to its source proves *where* it came from, not *why* it was used or whether the reasoning is sound. Causal verification remains an open problem across the field. |
+
+audit-fence provides a **verifiable enforcement layer** — a necessary foundation that other verification methods (semantic matching, causal reasoning) can build on top of. The enforcement log gives you a complete record of what was searched, what was submitted, and what was rejected, regardless of how sophisticated the verification logic becomes in the future.
 
 ## Origin
 
