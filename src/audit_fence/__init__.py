@@ -9,7 +9,7 @@ from .fence import (
 )
 from .group import FenceGroup
 from .prompts import PROMPTS
-from .tools import SandboxedSearch
+from .tools import RipgrepBackend, SandboxedSearch
 from .workflow import ClaimRecord, create_record_tool
 
 __all__ = [
@@ -17,6 +17,7 @@ __all__ = [
     "Fence",
     "FenceGroup",
     "PROMPTS",
+    "RipgrepBackend",
     "SandboxedSearch",
     "SearchRecord",
     "ValidationResult",
@@ -24,4 +25,4 @@ __all__ = [
     "extract_numbers",
     "normalize_number",
 ]
-__version__ = "0.1.0"
+__version__ = "0.4.0"

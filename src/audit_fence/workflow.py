@@ -95,6 +95,9 @@ class ClaimRecord:
         return asdict(self)
 
 
+_CLAIM_FIELDS = set(ClaimRecord.__dataclass_fields__.keys())
+
+
 def create_record_tool(
     fence: Fence,
     name: str = "record_claim",
@@ -103,7 +106,9 @@ def create_record_tool(
     require_search: bool = True,
     require_claim_in_document: bool = True,
     skip_enforcement: dict[str, Any] | Callable[[dict], bool] | None = None,
-    enrich: Callable[[ClaimRecord], ClaimRecord] | None = None,
+    enrich: Callable[[ClaimRecord], ClaimRecord | None] | None = None,
+    on_record: Callable[[ClaimRecord], None] | None = None,
+    on_reject: Callable[[str, str, str], None] | None = None,
 ) -> Callable:
     """Create an enforcement-checked record tool that produces ClaimRecords.
 
@@ -117,8 +122,12 @@ def create_record_tool(
         fence: The Fence instance to attach enforcement to.
         name: Function name for the returned tool.
         doc: Docstring for the returned tool.
-        extra_fields: Additional ClaimRecord field names to accept as
-            parameters (e.g. ``["source_tool", "raw_value", "verdict"]``).
+        extra_fields: Additional field names to accept as parameters.
+            Fields that match :class:`ClaimRecord` attributes (e.g.
+            ``"verdict"``, ``"source_tool"``) are set directly.
+            Unrecognized fields are stored in the record's ``metadata``
+            dict, so domain-specific data is preserved without schema
+            changes.
         require_search: If True (default), evidence must match search
             history (standard fence enforcement).
         require_claim_in_document: If True (default), claim_in_document
@@ -142,18 +151,35 @@ def create_record_tool(
         enrich: Optional callback invoked after a :class:`ClaimRecord` is
             created but *before* it is persisted.  Use this to resolve
             source coordinates, link upstream claims, or compute derived
-            fields.  The callback receives the record and must return a
-            (possibly modified) ``ClaimRecord``::
+            fields.  Return the (possibly modified) record, or ``None``
+            to reject::
 
-                def resolve(r: ClaimRecord) -> ClaimRecord:
+                def resolve(r: ClaimRecord) -> ClaimRecord | None:
                     r.source_tool = lookup(r.search_file, r.search_line)
+                    if not r.source_tool:
+                        return None  # reject — can't resolve source
                     return r
+
+        on_record: Optional callback fired after a record is successfully
+            created, enriched, and persisted.  Receives the final
+            :class:`ClaimRecord`.  Use for real-time event emission,
+            logging, or UI updates::
+
+                on_record=lambda r: emit_sse("claim_recorded", r.to_dict())
+
+        on_reject: Optional callback fired when a record is rejected
+            (enforcement failure, document mismatch, or enrich rejection).
+            Receives ``(tool_name, content, reason)``::
+
+                on_reject=lambda t, c, r: log.warning(f"[{t}] {r}")
 
     Returns:
         A callable record tool with fence enforcement.
     """
     extra = extra_fields or []
     _enrich = enrich
+    _on_record = on_record
+    _on_reject = on_reject
 
     # Build the skip predicate from the user-provided spec.
     if skip_enforcement is None:
@@ -177,20 +203,34 @@ def create_record_tool(
         claim_in_document: str,
         evidence: str,
         **kwargs: Any,
-    ) -> ClaimRecord:
+    ) -> Any:
         record_kwargs: dict[str, Any] = {
             "claim": claim,
             "claim_in_document": claim_in_document,
             "evidence": evidence,
         }
+        extra_metadata: dict[str, Any] = {}
         for f in extra:
             if f in kwargs:
-                record_kwargs[f] = kwargs[f]
+                if f in _CLAIM_FIELDS:
+                    record_kwargs[f] = kwargs[f]
+                else:
+                    extra_metadata[f] = kwargs[f]
+        if extra_metadata:
+            existing = record_kwargs.get("metadata", {})
+            record_kwargs["metadata"] = {**existing, **extra_metadata}
         record = ClaimRecord(**record_kwargs)
 
         # Enrichment hook: resolve source, link upstream, etc.
+        # Returning None signals rejection.
         if _enrich is not None:
             record = _enrich(record)
+            if record is None:
+                err = "Record rejected by enrich callback."
+                fence._log_rejection(name, evidence, err)
+                if _on_reject is not None:
+                    _on_reject(name, evidence, err)
+                return f"ERROR: {err}"
 
         # Append to fence claims list
         fence._claims.append(record)
@@ -198,6 +238,10 @@ def create_record_tool(
         # Auto-append to JSONL if output path is set
         if fence._output_path is not None:
             _append_jsonl(fence._output_path, record)
+
+        # Lifecycle callback
+        if _on_record is not None:
+            _on_record(record)
 
         return record
 
@@ -218,6 +262,8 @@ def create_record_tool(
             if require_claim_in_document and claim_in_document:
                 err = fence._check_claim_in_document(claim_in_document)
                 if err is not None:
+                    if _on_reject is not None:
+                        _on_reject(name, claim_in_document, err)
                     return err
 
             return _make_record(
@@ -246,6 +292,8 @@ def create_record_tool(
         if require_claim_in_document and claim_in_document:
             err = fence._check_claim_in_document(claim_in_document)
             if err is not None:
+                if _on_reject is not None:
+                    _on_reject(name, claim_in_document, err)
                 return err
 
         # Skip search enforcement when the predicate says so
@@ -257,6 +305,8 @@ def create_record_tool(
                     "tool first to find evidence before submitting."
                 )
                 fence._log_rejection(name, evidence, err)
+                if _on_reject is not None:
+                    _on_reject(name, evidence, err)
                 return f"ERROR: {err}"
 
             # Check 2: min evidence length
@@ -266,12 +316,16 @@ def create_record_tool(
                     f"min {fence._min_evidence_length}). Paste actual search output."
                 )
                 fence._log_rejection(name, evidence, err)
+                if _on_reject is not None:
+                    _on_reject(name, evidence, err)
                 return f"ERROR: {err}"
 
             # Check 3: evidence must match search history
             ok, err = fence._verify_search_match(evidence)
             if not ok:
                 fence._log_rejection(name, evidence, err)
+                if _on_reject is not None:
+                    _on_reject(name, evidence, err)
                 return f"ERROR: {err}"
 
         return _make_record(

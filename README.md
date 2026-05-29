@@ -357,7 +357,7 @@ fence.set_output("audit/citations.jsonl")   # auto-append each record
 record = create_record_tool(
     fence,
     name="record_citation",
-    extra_fields=["verdict", "source_tool", "raw_value"],
+    extra_fields=["verdict", "source_tool", "raw_value", "grep_file", "grep_line"],
 )
 
 # Usage: search first, then record
@@ -366,13 +366,17 @@ result = record(
     claim="Revenue was $5.1B",
     claim_in_document="revenue of $5.1 billion",
     evidence="fundamental.json:42: totalRevenue: 5098000000",
-    verdict="found",
-    source_tool="get_stock_info",
-    raw_value="5098000000",
+    verdict="found",               # known field → ClaimRecord.verdict
+    source_tool="get_stock_info",   # known field → ClaimRecord.source_tool
+    raw_value="5098000000",         # known field → ClaimRecord.raw_value
+    grep_file="fundamental.json",   # unknown field → ClaimRecord.metadata["grep_file"]
+    grep_line=42,                   # unknown field → ClaimRecord.metadata["grep_line"]
 )
 # result is a ClaimRecord instance
 # also auto-appended to audit/citations.jsonl
 ```
+
+`extra_fields` that match `ClaimRecord` attributes (e.g. `verdict`, `source_tool`) are set directly on the record. Unrecognized fields are automatically routed to the record's `metadata` dict — domain-specific data is preserved without schema changes.
 
 ### Conditional enforcement
 
@@ -421,15 +425,17 @@ Document enforcement (`claim_in_document` vs `set_document()`) is always checked
 
 ### Record enrichment
 
-The `enrich` callback runs after a `ClaimRecord` is created but before it's persisted. Use it to resolve source coordinates, link upstream claims, or compute derived fields:
+The `enrich` callback runs after a `ClaimRecord` is created but before it's persisted. Use it to resolve source coordinates, link upstream claims, or compute derived fields. Return the record to accept, or `None` to reject:
 
 ```python
-def resolve_source(record: ClaimRecord) -> ClaimRecord:
+def resolve_source(record: ClaimRecord) -> ClaimRecord | None:
     """Auto-resolve tool name from grep coordinates."""
     if record.search_file and record.search_line >= 0:
         tool, idx = my_trace_resolver(record.search_file, record.search_line)
         record.source_tool = tool
         record.source_index = idx
+    else:
+        return None  # reject — can't resolve source provenance
     return record
 
 record = create_record_tool(
@@ -439,7 +445,27 @@ record = create_record_tool(
 )
 ```
 
+When `enrich` returns `None`, the record is **not** added to `fence.claims` or written to JSONL. The rejection is logged in `fence.rejections` and triggers the `on_reject` callback (see below). This is useful when source resolution is a hard requirement — if you can't trace a claim back to a specific tool call, it shouldn't be recorded.
+
 The enriched record is what gets stored in `fence.claims` and written to JSONL — the resolved fields are persisted, not just the raw inputs.
+
+### Lifecycle callbacks
+
+`on_record` and `on_reject` provide hooks for real-time event handling — logging, SSE emission, metrics collection, or UI updates:
+
+```python
+record = create_record_tool(
+    fence,
+    on_record=lambda r: print(f"Recorded #{r.id}: {r.verdict} — {r.claim[:50]}"),
+    on_reject=lambda tool, content, reason: log.warning(f"[{tool}] {reason}"),
+)
+```
+
+`on_record` fires after a record is successfully created, enriched, and persisted. It receives the final `ClaimRecord`.
+
+`on_reject` fires on any rejection — enforcement failure (no search, evidence too short, evidence mismatch), document mismatch, or enrich rejection. It receives `(tool_name, content, reason)`.
+
+Both are optional and independent. They don't affect control flow — exceptions in callbacks propagate normally.
 
 ### Evidence chain
 
@@ -583,6 +609,29 @@ search_b("revenue", "tools/data.json")                     # ✓ allowed
 
 Path traversal (e.g., `tools/../secret/data.json`) is automatically blocked.
 
+### RipgrepBackend
+
+A ready-to-use search backend that wraps the `rg` CLI via subprocess. Compose with `SandboxedSearch` for path restrictions and `fence.wrap_one()` for history tracking:
+
+```python
+from audit_fence import RipgrepBackend, SandboxedSearch, Fence
+
+fence = Fence()
+
+# Basic: search a directory
+grep = RipgrepBackend(root="./trace/")
+search = fence.wrap_one(grep, role="search")
+search("revenue", "tools/")   # returns file:line:content text
+
+# With sandbox: restrict to specific directories
+sandboxed = SandboxedSearch(backend=grep, allowed_dirs=["tools/"])
+search = fence.wrap_one(sandboxed, role="search")
+search("revenue", "tools/")           # ✓ allowed
+search("secret", "private/keys.txt")  # => ERROR: outside sandbox
+```
+
+Requires `rg` (ripgrep) to be installed on the system — no Python dependencies are added. Output paths are converted to root-relative. Results are truncated at 200 lines by default (`max_matches` parameter).
+
 ### FenceGroup
 
 `FenceGroup` is optional convenience — you can always create and link Fences directly. It provides named lookup, bulk operations, and group-level snapshot/restore:
@@ -685,6 +734,7 @@ The snapshot captures search history, rejections, configuration, and link topolo
 | [`minimal.py`](examples/minimal.py) | Core pattern in 15 lines |
 | [`financial_report.py`](examples/financial_report.py) | Financial report audit with source text verification |
 | [`langchain_agent.py`](examples/langchain_agent.py) | Integration with LangGraph / LangChain |
+| [`multi_agent_audit.py`](examples/multi_agent_audit.py) | Multi-stage pipeline: tool call annotation, evidence chains, enrich rejection, callbacks |
 
 ## Scope and Limitations
 

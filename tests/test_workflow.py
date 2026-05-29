@@ -1153,3 +1153,628 @@ def test_claim_record_upstream_serialization():
     d2 = json.loads(json.dumps(d))
     assert d2["upstream_id"] == 5
     assert d2["upstream_fence"] == "r1_fundamental"
+
+
+# ============================================================================
+# METADATA ROUTING (v0.3.0)
+# ============================================================================
+
+
+def test_extra_fields_metadata_routing():
+    """Unknown extra_fields should be routed to metadata dict."""
+    reset_claim_ids()
+    fence = Fence()
+
+    @fence.track
+    def search(query: str) -> str:
+        return "line 42: revenue data found in search output"
+
+    record = create_record_tool(
+        fence,
+        extra_fields=["verdict", "grep_file", "grep_line", "output_line"],
+        require_claim_in_document=False,
+    )
+    search("revenue")
+
+    result = record(
+        claim="Revenue was $5.1B",
+        claim_in_document="revenue",
+        evidence="line 42: revenue data found in search output",
+        verdict="found",
+        grep_file="tools/data.json",
+        grep_line=42,
+        output_line=1,
+    )
+    assert isinstance(result, ClaimRecord)
+    # Known field → set directly on record
+    assert result.verdict == "found"
+    # Unknown fields → routed to metadata
+    assert result.metadata["grep_file"] == "tools/data.json"
+    assert result.metadata["grep_line"] == 42
+    assert result.metadata["output_line"] == 1
+
+
+def test_extra_fields_metadata_serialization(tmp_path):
+    """Metadata-routed fields should survive JSONL roundtrip."""
+    reset_claim_ids()
+    fence = Fence()
+    output_file = str(tmp_path / "meta.jsonl")
+    fence.set_output(output_file)
+
+    @fence.track
+    def search(query: str) -> str:
+        return "line 10: evidence output from search results"
+
+    record = create_record_tool(
+        fence,
+        extra_fields=["verdict", "custom_score"],
+        require_claim_in_document=False,
+    )
+    search("test")
+
+    record(
+        claim="Test",
+        claim_in_document="evidence",
+        evidence="line 10: evidence output from search results",
+        verdict="found",
+        custom_score=0.95,
+    )
+
+    with open(output_file) as f:
+        data = json.loads(f.readline())
+    assert data["verdict"] == "found"
+    assert data["metadata"]["custom_score"] == 0.95
+
+
+def test_extra_fields_mixed_known_unknown():
+    """Mix of known ClaimRecord fields and unknown fields should both work."""
+    reset_claim_ids()
+    fence = Fence()
+
+    @fence.track
+    def search(query: str) -> str:
+        return "line 10: search output results data here"
+
+    record = create_record_tool(
+        fence,
+        extra_fields=[
+            "verdict",           # known → ClaimRecord.verdict
+            "source_tool",       # known → ClaimRecord.source_tool
+            "raw_value",         # known → ClaimRecord.raw_value
+            "specialist_agent",  # unknown → metadata
+            "confidence",        # unknown → metadata
+        ],
+        require_claim_in_document=False,
+    )
+    search("test")
+
+    result = record(
+        claim="Test",
+        claim_in_document="search",
+        evidence="line 10: search output results data here",
+        verdict="found",
+        source_tool="get_income_statement",
+        raw_value="5098000000",
+        specialist_agent="fundamental",
+        confidence=0.92,
+    )
+    assert isinstance(result, ClaimRecord)
+    # Known fields set directly
+    assert result.verdict == "found"
+    assert result.source_tool == "get_income_statement"
+    assert result.raw_value == "5098000000"
+    # Unknown fields in metadata
+    assert result.metadata["specialist_agent"] == "fundamental"
+    assert result.metadata["confidence"] == 0.92
+
+
+def test_extra_fields_no_unknown_no_metadata():
+    """When all extra_fields are known, metadata should stay empty."""
+    reset_claim_ids()
+    fence = Fence()
+
+    @fence.track
+    def search(query: str) -> str:
+        return "line 10: search output results data here"
+
+    record = create_record_tool(
+        fence,
+        extra_fields=["verdict", "source_tool"],
+        require_claim_in_document=False,
+    )
+    search("test")
+
+    result = record(
+        claim="Test",
+        claim_in_document="search",
+        evidence="line 10: search output results data here",
+        verdict="found",
+        source_tool="get_stock_info",
+    )
+    assert isinstance(result, ClaimRecord)
+    assert result.metadata == {}
+
+
+# ============================================================================
+# ON_RECORD / ON_REJECT CALLBACKS (v0.3.0)
+# ============================================================================
+
+
+def test_on_record_callback():
+    """on_record should fire after successful record creation."""
+    reset_claim_ids()
+    fence = Fence()
+    recorded = []
+
+    @fence.track
+    def search(query: str) -> str:
+        return "line 10: search output results data here"
+
+    record = create_record_tool(
+        fence,
+        on_record=lambda r: recorded.append(r),
+        require_claim_in_document=False,
+    )
+    search("test")
+
+    result = record(
+        claim="Test claim",
+        claim_in_document="search",
+        evidence="line 10: search output results data here",
+    )
+    assert isinstance(result, ClaimRecord)
+    assert len(recorded) == 1
+    assert recorded[0].claim == "Test claim"
+    assert recorded[0] is result
+
+
+def test_on_record_not_called_on_rejection():
+    """on_record should NOT fire when a record is rejected."""
+    reset_claim_ids()
+    fence = Fence()
+    recorded = []
+
+    # No search performed → enforcement will reject
+    record = create_record_tool(
+        fence,
+        on_record=lambda r: recorded.append(r),
+        require_claim_in_document=False,
+    )
+
+    result = record(
+        claim="Rejected",
+        claim_in_document="test",
+        evidence="fabricated evidence without any search performed",
+    )
+    assert isinstance(result, str)
+    assert "ERROR" in result
+    assert len(recorded) == 0
+
+
+def test_on_reject_enforcement_failure():
+    """on_reject should fire when search enforcement fails."""
+    reset_claim_ids()
+    fence = Fence()
+    rejections = []
+
+    record = create_record_tool(
+        fence,
+        on_reject=lambda tool, content, reason: rejections.append(
+            {"tool": tool, "reason": reason}
+        ),
+        require_claim_in_document=False,
+    )
+
+    # No search → enforcement failure
+    result = record(
+        claim="Bad claim",
+        claim_in_document="test",
+        evidence="fabricated evidence without any search history",
+    )
+    assert isinstance(result, str)
+    assert "ERROR" in result
+    assert len(rejections) == 1
+    assert "No search calls recorded" in rejections[0]["reason"]
+    assert rejections[0]["tool"] == "record_claim"
+
+
+def test_on_reject_document_mismatch():
+    """on_reject should fire when claim_in_document doesn't match."""
+    reset_claim_ids()
+    fence = Fence()
+    fence.set_document("The company reported revenue of $5.1 billion.")
+    rejections = []
+
+    @fence.track
+    def search(query: str) -> str:
+        return "line 42: revenue data found in the output"
+
+    record = create_record_tool(
+        fence,
+        on_reject=lambda tool, content, reason: rejections.append(
+            {"tool": tool, "reason": reason}
+        ),
+        require_claim_in_document=True,
+    )
+    search("revenue")
+
+    result = record(
+        claim="Revenue claim",
+        claim_in_document="this text is NOT in the document at all",
+        evidence="line 42: revenue data found in the output",
+    )
+    assert isinstance(result, str)
+    assert "ERROR" in result
+    assert len(rejections) == 1
+    assert "not found in the audited document" in rejections[0]["reason"]
+
+
+def test_on_reject_custom_name():
+    """on_reject should include the custom tool name."""
+    reset_claim_ids()
+    fence = Fence()
+    rejections = []
+
+    record = create_record_tool(
+        fence,
+        name="record_specialist_claim",
+        on_reject=lambda tool, content, reason: rejections.append(tool),
+        require_claim_in_document=False,
+    )
+
+    record(
+        claim="Bad",
+        claim_in_document="test",
+        evidence="no search history so this will be rejected",
+    )
+    assert len(rejections) == 1
+    assert rejections[0] == "record_specialist_claim"
+
+
+def test_on_record_and_on_reject_together():
+    """Both callbacks should work independently in the same tool."""
+    reset_claim_ids()
+    fence = Fence()
+    recorded = []
+    rejections = []
+
+    @fence.track
+    def search(query: str) -> str:
+        return "line 10: evidence data found in search results"
+
+    record = create_record_tool(
+        fence,
+        on_record=lambda r: recorded.append(r.claim),
+        on_reject=lambda t, c, r: rejections.append(r),
+        require_claim_in_document=False,
+    )
+
+    # First: success
+    search("test")
+    record(
+        claim="Good claim",
+        claim_in_document="evidence",
+        evidence="line 10: evidence data found in search results",
+    )
+    assert len(recorded) == 1
+    assert len(rejections) == 0
+
+    # Second: success (search history still valid)
+    record(
+        claim="Another good claim",
+        claim_in_document="evidence",
+        evidence="line 10: evidence data found in search results",
+    )
+    assert len(recorded) == 2
+    assert len(rejections) == 0
+
+
+# ============================================================================
+# ENRICH REJECTION (v0.3.0)
+# ============================================================================
+
+
+def test_enrich_reject_returns_error():
+    """enrich returning None should reject the record."""
+    reset_claim_ids()
+    fence = Fence()
+
+    def reject_all(record: ClaimRecord) -> ClaimRecord | None:
+        return None  # reject every record
+
+    @fence.track
+    def search(query: str) -> str:
+        return "line 10: data found in search results output"
+
+    record = create_record_tool(
+        fence,
+        enrich=reject_all,
+        require_claim_in_document=False,
+    )
+    search("test")
+
+    result = record(
+        claim="Should be rejected",
+        claim_in_document="data",
+        evidence="line 10: data found in search results output",
+    )
+    assert isinstance(result, str)
+    assert "ERROR" in result
+    assert "rejected by enrich" in result.lower()
+    # Should NOT be in fence claims
+    assert len(fence.claims) == 0
+
+
+def test_enrich_reject_triggers_on_reject():
+    """Enrich rejection should trigger the on_reject callback."""
+    reset_claim_ids()
+    fence = Fence()
+    rejections = []
+
+    def reject_if_no_tool(record: ClaimRecord) -> ClaimRecord | None:
+        if not record.source_tool:
+            return None
+        return record
+
+    @fence.track
+    def search(query: str) -> str:
+        return "line 10: data found in search results output"
+
+    record = create_record_tool(
+        fence,
+        enrich=reject_if_no_tool,
+        on_reject=lambda tool, content, reason: rejections.append(reason),
+        require_claim_in_document=False,
+    )
+    search("test")
+
+    result = record(
+        claim="No tool set",
+        claim_in_document="data",
+        evidence="line 10: data found in search results output",
+    )
+    assert isinstance(result, str)
+    assert "ERROR" in result
+    assert len(rejections) == 1
+    assert "enrich" in rejections[0].lower()
+
+
+def test_enrich_reject_logged_in_fence():
+    """Enrich rejection should be logged in fence rejections."""
+    reset_claim_ids()
+    fence = Fence()
+
+    def reject_all(record: ClaimRecord) -> ClaimRecord | None:
+        return None
+
+    @fence.track
+    def search(query: str) -> str:
+        return "line 10: data found in search results output"
+
+    record = create_record_tool(
+        fence,
+        enrich=reject_all,
+        require_claim_in_document=False,
+    )
+    search("test")
+
+    record(
+        claim="Rejected",
+        claim_in_document="data",
+        evidence="line 10: data found in search results output",
+    )
+
+    # Fence should have logged the rejection
+    assert len(fence.rejections) >= 1
+    last_rejection = fence.rejections[-1]
+    assert "enrich" in last_rejection["reason"].lower()
+
+
+def test_enrich_reject_not_persisted(tmp_path):
+    """Enrich-rejected records should NOT be written to JSONL."""
+    reset_claim_ids()
+    fence = Fence()
+    output_file = str(tmp_path / "enrich_reject.jsonl")
+    fence.set_output(output_file)
+
+    call_count = [0]
+
+    def reject_second(record: ClaimRecord) -> ClaimRecord | None:
+        call_count[0] += 1
+        if call_count[0] == 2:
+            return None  # reject the second record
+        return record
+
+    @fence.track
+    def search(query: str) -> str:
+        return "line 10: data found in search results output"
+
+    record = create_record_tool(
+        fence,
+        enrich=reject_second,
+        require_claim_in_document=False,
+    )
+    search("test")
+
+    # First: accepted
+    r1 = record(
+        claim="First accepted",
+        claim_in_document="data",
+        evidence="line 10: data found in search results output",
+    )
+    assert isinstance(r1, ClaimRecord)
+
+    # Second: rejected by enrich
+    r2 = record(
+        claim="Second rejected",
+        claim_in_document="data",
+        evidence="line 10: data found in search results output",
+    )
+    assert isinstance(r2, str)
+    assert "ERROR" in r2
+
+    # Only 1 record in fence and JSONL
+    assert len(fence.claims) == 1
+    with open(output_file) as f:
+        lines = f.readlines()
+    assert len(lines) == 1
+    assert json.loads(lines[0])["claim"] == "First accepted"
+
+
+# ============================================================================
+# RIPGREP BACKEND (v0.3.0)
+# ============================================================================
+
+
+def test_ripgrep_backend_import():
+    """RipgrepBackend should be importable from audit_fence."""
+    from audit_fence import RipgrepBackend
+    assert RipgrepBackend is not None
+
+
+def test_ripgrep_backend_search(tmp_path):
+    """RipgrepBackend should find patterns in files."""
+    from audit_fence import RipgrepBackend
+
+    # Create a test file
+    test_file = tmp_path / "data.json"
+    test_file.write_text('{"revenue": 5098000000, "currency": "USD"}\n')
+
+    try:
+        rg = RipgrepBackend(root=str(tmp_path))
+    except FileNotFoundError:
+        import pytest
+        pytest.skip("ripgrep (rg) not installed")
+
+    result = rg("5098")
+    assert "5098000000" in result
+    assert "data.json" in result
+
+
+def test_ripgrep_backend_no_matches(tmp_path):
+    """RipgrepBackend should return 'No matches' for absent patterns."""
+    from audit_fence import RipgrepBackend
+
+    test_file = tmp_path / "data.json"
+    test_file.write_text('{"revenue": 5098000000}\n')
+
+    try:
+        rg = RipgrepBackend(root=str(tmp_path))
+    except FileNotFoundError:
+        import pytest
+        pytest.skip("ripgrep (rg) not installed")
+
+    result = rg("nonexistent_pattern_xyz")
+    assert "No matches" in result
+
+
+def test_ripgrep_backend_relative_paths(tmp_path):
+    """RipgrepBackend should return root-relative file paths."""
+    from audit_fence import RipgrepBackend
+
+    subdir = tmp_path / "tools"
+    subdir.mkdir()
+    test_file = subdir / "calls.json"
+    test_file.write_text('{"trailingPE": 18.923}\n')
+
+    try:
+        rg = RipgrepBackend(root=str(tmp_path))
+    except FileNotFoundError:
+        import pytest
+        pytest.skip("ripgrep (rg) not installed")
+
+    result = rg("18.923", "tools/")
+    assert "tools/calls.json" in result or "calls.json" in result
+    # Should NOT contain absolute path
+    assert str(tmp_path) not in result
+
+
+def test_ripgrep_backend_empty_pattern(tmp_path):
+    """Empty pattern should return an error."""
+    from audit_fence import RipgrepBackend
+
+    test_file = tmp_path / "data.txt"
+    test_file.write_text("some content\n")
+
+    try:
+        rg = RipgrepBackend(root=str(tmp_path))
+    except FileNotFoundError:
+        import pytest
+        pytest.skip("ripgrep (rg) not installed")
+
+    result = rg("")
+    assert "ERROR" in result
+
+
+def test_ripgrep_backend_missing_path(tmp_path):
+    """Non-existent search path should return an error."""
+    from audit_fence import RipgrepBackend
+
+    try:
+        rg = RipgrepBackend(root=str(tmp_path))
+    except FileNotFoundError:
+        import pytest
+        pytest.skip("ripgrep (rg) not installed")
+
+    result = rg("pattern", "nonexistent/dir/")
+    assert "ERROR" in result
+
+
+def test_ripgrep_backend_composable_with_sandbox(tmp_path):
+    """RipgrepBackend should compose with SandboxedSearch."""
+    from audit_fence import RipgrepBackend
+
+    tools_dir = tmp_path / "tools"
+    tools_dir.mkdir()
+    (tools_dir / "data.json").write_text('{"revenue": 5098000000}\n')
+    secret_dir = tmp_path / "secret"
+    secret_dir.mkdir()
+    (secret_dir / "keys.txt").write_text("api_key=sk-12345\n")
+
+    try:
+        rg = RipgrepBackend(root=str(tmp_path))
+    except FileNotFoundError:
+        import pytest
+        pytest.skip("ripgrep (rg) not installed")
+
+    sandboxed = SandboxedSearch(backend=rg, allowed_dirs=["tools"])
+
+    # Allowed: search in tools/
+    result = sandboxed("5098", "tools/")
+    assert "5098" in result
+    assert "ERROR" not in result
+
+    # Blocked: search in secret/
+    result = sandboxed("api_key", "secret/")
+    assert "ERROR" in result
+    assert "outside the allowed search" in result
+
+
+def test_ripgrep_backend_with_fence_track(tmp_path):
+    """RipgrepBackend should work with fence.wrap_one() for history tracking."""
+    from audit_fence import RipgrepBackend, FenceGroup
+
+    reset_claim_ids()
+    tools_dir = tmp_path / "tools"
+    tools_dir.mkdir()
+    (tools_dir / "data.json").write_text(
+        '{"totalRevenue": 5098000000, "revenueGrowth": 0.122}\n'
+    )
+
+    try:
+        rg = RipgrepBackend(root=str(tmp_path))
+    except FileNotFoundError:
+        import pytest
+        pytest.skip("ripgrep (rg) not installed")
+
+    group = FenceGroup()
+    fence = group.create("test_fence")
+
+    search = fence.wrap_one(rg, role="search")
+    result = search("5098", "tools/")
+    assert "5098" in result
+
+    # Search should be recorded in history
+    history = fence._collect_history()
+    assert len(history) >= 1
+    assert "5098" in history[0].result_text
