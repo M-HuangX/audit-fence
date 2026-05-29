@@ -189,6 +189,41 @@ def submit(claim_in_report: str, evidence: str) -> dict: ...
 def submit(claim: str, evidence: str) -> dict: ...
 ```
 
+### Document enforcement
+
+`set_document()` tells the fence which document is being audited. Any function with a `claim_in_document` parameter is automatically checked — the value must be a verbatim substring of the document (after markdown normalization):
+
+```python
+fence = Fence()
+fence.set_document("The company reported revenue of $5.1 billion in FY2025.")
+
+@fence.track
+def search(query: str) -> str: ...
+
+@fence.enforce
+def record(claim: str, claim_in_document: str, evidence: str) -> dict:
+    return {"claim": claim, "status": "ok"}
+
+search("revenue")
+record(
+    claim="Revenue was $5.1B",
+    claim_in_document="revenue of $5.1 billion",    # ✓ found in document
+    evidence="<matching search output>",
+)
+record(
+    claim="Revenue was $5.1B",
+    claim_in_document="revenue of $8.2 billion",    # ✗ not in document
+    evidence="<matching search output>",
+)
+# => ERROR: 'revenue of $8.2 billion' not found in the audited document
+```
+
+Callable documents are supported for dynamic content (re-evaluated each time):
+
+```python
+fence.set_document(lambda: open("report.md").read())
+```
+
 ### Rejection logging
 
 Every rejected submission is recorded:
@@ -283,6 +318,164 @@ for fn in fence.tools:
 
 ---
 
+## Structured Claims
+
+The core `@fence.track` / `@fence.enforce` decorators work with any function signature. For audit workflows that produce structured claim records — with verdicts, source provenance, and evidence chains — audit-fence provides a higher-level API built on top.
+
+### ClaimRecord
+
+A dataclass that links a document statement to its source evidence:
+
+```python
+from audit_fence import ClaimRecord
+
+record = ClaimRecord(
+    claim="P/E ratio of 18.9x",                          # what's being verified
+    claim_in_document="the stock trades at 18.9x P/E",   # verbatim text from audited document
+    evidence="fundamental.json:18: pe_ratio: 18.923",    # search output that supports it
+    source_tool="get_stock_info",                         # which tool produced the source data
+    source_index=0,                                       # tool call index
+    raw_value="18.923",                                   # exact value from source
+    verdict="found",                                      # user-defined (no built-in taxonomy)
+    source_type="standard",                               # standard | kb | web | computation | custom
+)
+```
+
+All fields except `claim`, `claim_in_document`, and `evidence` are optional. IDs auto-increment. Serialize with `record.to_dict()`.
+
+### create_record_tool
+
+Factory function that creates an enforcement-checked record tool — combines `@fence.enforce` with `ClaimRecord` creation and JSONL persistence:
+
+```python
+from audit_fence import Fence, create_record_tool
+
+fence = Fence()
+fence.set_document(report_text)
+fence.set_output("audit/citations.jsonl")   # auto-append each record
+
+record = create_record_tool(
+    fence,
+    name="record_citation",
+    extra_fields=["verdict", "source_tool", "raw_value"],
+)
+
+# Usage: search first, then record
+search("revenue")
+result = record(
+    claim="Revenue was $5.1B",
+    claim_in_document="revenue of $5.1 billion",
+    evidence="fundamental.json:42: totalRevenue: 5098000000",
+    verdict="found",
+    source_tool="get_stock_info",
+    raw_value="5098000000",
+)
+# result is a ClaimRecord instance
+# also auto-appended to audit/citations.jsonl
+```
+
+### Conditional enforcement
+
+Sometimes certain record types should bypass search enforcement — a "not-found" verdict doesn't have evidence to match, a "kb" source type comes from a knowledge base rather than a search.
+
+`skip_enforcement` accepts two forms:
+
+**Dict form** — skip when any field matches a listed value:
+
+```python
+# Skip search enforcement for not-found and derived verdicts
+record = create_record_tool(
+    fence,
+    extra_fields=["verdict"],
+    skip_enforcement={"verdict": ["not-found", "derived"]},
+)
+
+# Skip based on source type instead
+record = create_record_tool(
+    fence,
+    extra_fields=["source_type"],
+    skip_enforcement={"source_type": ["kb", "web", "derived"]},
+)
+
+# Multiple fields — skip if ANY matches
+record = create_record_tool(
+    fence,
+    extra_fields=["verdict", "source_type"],
+    skip_enforcement={
+        "verdict": ["not-found"],
+        "source_type": ["kb", "web"],
+    },
+)
+```
+
+**Callable form** — full flexibility for custom predicates:
+
+```python
+record = create_record_tool(
+    fence,
+    skip_enforcement=lambda kw: kw.get("confidence", 0) > 0.9,
+)
+```
+
+Document enforcement (`claim_in_document` vs `set_document()`) is always checked regardless of skip — it's orthogonal to search enforcement.
+
+### Record enrichment
+
+The `enrich` callback runs after a `ClaimRecord` is created but before it's persisted. Use it to resolve source coordinates, link upstream claims, or compute derived fields:
+
+```python
+def resolve_source(record: ClaimRecord) -> ClaimRecord:
+    """Auto-resolve tool name from grep coordinates."""
+    if record.search_file and record.search_line >= 0:
+        tool, idx = my_trace_resolver(record.search_file, record.search_line)
+        record.source_tool = tool
+        record.source_index = idx
+    return record
+
+record = create_record_tool(
+    fence,
+    extra_fields=["search_file", "search_line"],
+    enrich=resolve_source,
+)
+```
+
+The enriched record is what gets stored in `fence.claims` and written to JSONL — the resolved fields are persisted, not just the raw inputs.
+
+### Evidence chain
+
+In multi-stage pipelines, claims in later stages trace back to claims from earlier stages. `ClaimRecord` supports this with `upstream_id` and `upstream_fence`:
+
+```python
+from audit_fence import FenceGroup, create_record_tool
+
+group = FenceGroup()
+r1 = group.create("r1_fundamental")
+r2 = group.create("r2_specialist")
+
+# R1 records a claim
+rec_r1 = create_record_tool(r1, name="record_r1_claim", ...)
+search_r1("pe_ratio")
+r1_claim = rec_r1(claim="P/E of 18.9x", ...)
+
+# R2 records a claim that links back to R1
+def link_to_r1(record):
+    best_match = find_nearest(r1.claims, record)   # your matching logic
+    if best_match:
+        record.upstream_id = best_match.id
+        record.upstream_fence = "r1_fundamental"
+    return record
+
+rec_r2 = create_record_tool(r2, name="record_r2_claim", enrich=link_to_r1, ...)
+
+# Traverse the full chain
+chain = group.trace_chain(r2_claim)
+# [r2_claim, r1_claim] — from final claim back to source
+```
+
+`trace_chain()` is cycle-safe and works with arbitrarily long pipelines. The matching logic (which R1 claim does this R2 claim reference?) is deliberately left to the user — different domains require different strategies (text similarity, line distance, exact ID matching, etc.). The library provides the storage and traversal; you provide the matching.
+
+---
+
 ## Multi-Agent Enforcement
 
 A single Fence works for one agent. But production systems often have multiple agents — specialists that search, a core agent that synthesizes, an auditor that verifies. When the auditor cites evidence that a specialist found, which Fence's history should it check against?
@@ -363,6 +556,33 @@ print(f"Total rejections: {len(group.all_rejections)}")
 
 The key insight: each R1 auditor is **isolated** to its specialist. It cannot accidentally cite evidence from a different specialist's search history. The R2 auditor intentionally sees all four. The topology encodes the audit policy.
 
+### Path sandboxing
+
+In multi-agent audits, different agents should be restricted to different data sources — an agent auditing specialist outputs shouldn't be able to search raw tool data, and vice versa. `SandboxedSearch` wraps a search backend with path restrictions:
+
+```python
+from audit_fence import SandboxedSearch
+
+# Agent A: can only search specialist outputs
+search_a = SandboxedSearch(
+    backend=grep_backend,
+    allowed_dirs=["trace/specialist_outputs/"],
+)
+
+# Agent B: can only search raw tool data + read the report
+search_b = SandboxedSearch(
+    backend=grep_backend,
+    allowed_dirs=["tools/"],
+    allowed_files=["report.md"],
+)
+
+search_a("revenue", "trace/specialist_outputs/fund.md")   # ✓ allowed
+search_a("revenue", "tools/data.json")                     # => ERROR: outside sandbox
+search_b("revenue", "tools/data.json")                     # ✓ allowed
+```
+
+Path traversal (e.g., `tools/../secret/data.json`) is automatically blocked.
+
 ### FenceGroup
 
 `FenceGroup` is optional convenience — you can always create and link Fences directly. It provides named lookup, bulk operations, and group-level snapshot/restore:
@@ -378,8 +598,12 @@ group["fundamental"].rejections
 # Bulk operations
 group.all_rejections       # sorted by timestamp across all fences
 group.all_history          # combined search history
+group.all_claims           # all ClaimRecords across all fences
 group.save_log("audit.jsonl")
 group.reset()
+
+# Evidence chain traversal (see Structured Claims section)
+chain = group.trace_chain(some_claim)
 ```
 
 ---
