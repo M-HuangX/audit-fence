@@ -8,12 +8,19 @@ from .fence import (
     normalize_number,
 )
 from .group import FenceGroup
+from .prompts import PROMPTS
+from .tools import SandboxedSearch
+from .workflow import ClaimRecord, create_record_tool
 
 __all__ = [
+    "ClaimRecord",
     "Fence",
     "FenceGroup",
+    "PROMPTS",
+    "SandboxedSearch",
     "SearchRecord",
     "ValidationResult",
+    "create_record_tool",
     "extract_numbers",
     "normalize_number",
 ]

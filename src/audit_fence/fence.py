@@ -22,6 +22,10 @@ class SearchRecord:
     timestamp: float = field(default_factory=time.time)
     metadata: dict = field(default_factory=dict)
     source: str = ""
+    tool_name: str = ""
+    """Which tool produced this result (e.g. 'get_stock_info')."""
+    file_path: str = ""
+    """File where result was found (e.g. grep result path)."""
 
 
 @dataclass
@@ -109,6 +113,10 @@ class Fence:
         self._submit_fns: list[Callable] = []
         self._track_all = track_all
         self._upstream: list[Fence] = []
+        # Workflow layer attributes
+        self._document: str | Callable[[], str] | None = None
+        self._output_path: str | None = None
+        self._claims: list = []  # list[ClaimRecord] (avoid circular import)
 
     # -- Public properties ---------------------------------------------------
 
@@ -131,6 +139,93 @@ class Fence:
     def tools(self) -> list[Callable]:
         """All registered tools (search + submit), in registration order."""
         return self._search_fns + self._submit_fns
+
+    @property
+    def claims(self) -> list:
+        """All recorded ClaimRecords."""
+        return list(self._claims)
+
+    # -- Document & output ---------------------------------------------------
+
+    def set_document(self, text: str | Callable[[], str]) -> None:
+        """Set the document being audited.
+
+        When a document is set, any ``@fence.enforce`` tool whose function
+        has a ``claim_in_document`` parameter will automatically verify
+        that the parameter value is a normalized substring of this
+        document.
+
+        Args:
+            text: The document text, or a callable that returns it
+                (for dynamic content).
+        """
+        self._document = text
+
+    def set_output(self, path: str) -> None:
+        """Set the JSONL output file path for claim persistence.
+
+        When set, every successful record call that produces a
+        :class:`~audit_fence.workflow.ClaimRecord` will auto-append to
+        this file.
+
+        Args:
+            path: File path for JSONL output.
+        """
+        self._output_path = path
+
+    def save_claims(self, path: str | None = None) -> None:
+        """Write all recorded claims to a JSONL file.
+
+        Args:
+            path: Output file path. If None, uses the path set by
+                :meth:`set_output`. Raises ValueError if neither is set.
+        """
+        target = path or self._output_path
+        if target is None:
+            raise ValueError(
+                "No output path set. Call set_output() or pass a path."
+            )
+        p = Path(target)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "w", encoding="utf-8") as f:
+            for claim in self._claims:
+                f.write(
+                    json.dumps(claim.to_dict(), ensure_ascii=False) + "\n"
+                )
+
+    @property
+    def _resolved_document(self) -> str | None:
+        """Resolve the document text (handles callables)."""
+        if self._document is None:
+            return None
+        if callable(self._document):
+            return self._document()
+        return self._document
+
+    def _check_claim_in_document(self, claim_text: str) -> str | None:
+        """Verify claim_in_document is a substring of the audited document.
+
+        Returns an ERROR string if the check fails, or None if it passes
+        (or if no document is set).
+        """
+        doc = self._resolved_document
+        if doc is None:
+            return None  # No document set, skip check
+        if not claim_text:
+            return None  # Empty claim, skip check
+
+        norm_claim = _normalize(claim_text)
+        norm_doc = _normalize(doc)
+
+        if norm_claim in norm_doc:
+            return None  # Match found
+
+        err = (
+            "Claim text not found in the audited document. "
+            "Copy the EXACT text."
+        )
+        self._log_rejection("claim_in_document", claim_text, err)
+        return f"ERROR: {err}"
 
     # -- Linking -------------------------------------------------------------
 
@@ -312,6 +407,15 @@ class Fence:
                             )
                             return f"ERROR: {err}"
 
+                # Check 5 (auto): claim_in_document vs fence document
+                cid = _resolve_param(
+                    func, "claim_in_document", args, kwargs
+                )
+                if cid:
+                    doc_err = self._check_claim_in_document(cid)
+                    if doc_err is not None:
+                        return doc_err
+
                 return None  # All checks passed
 
             if inspect.iscoroutinefunction(func):
@@ -457,9 +561,10 @@ class Fence:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
     def reset(self) -> None:
-        """Clear search history and rejection log."""
+        """Clear search history, rejection log, and recorded claims."""
         self._history.clear()
         self._rejections.clear()
+        self._claims.clear()
 
     # -- Serialization --------------------------------------------------------
 
@@ -474,6 +579,8 @@ class Fence:
                     "timestamp": r.timestamp,
                     "metadata": r.metadata,
                     "source": r.source,
+                    "tool_name": r.tool_name,
+                    "file_path": r.file_path,
                 }
                 for r in self._history
             ],
@@ -754,6 +861,13 @@ class Fence:
                 self._log_rejection(tool_name, evidence, err)
                 return f"ERROR: {err}"
 
+            # claim_in_document enforcement (auto)
+            cid = _resolve_param(fn, "claim_in_document", args, kwargs)
+            if cid:
+                doc_err = self._check_claim_in_document(cid)
+                if doc_err is not None:
+                    return doc_err
+
             return None
 
         if inspect.iscoroutinefunction(fn):
@@ -863,7 +977,11 @@ def _verify_source_match(claim: str, source_text: str) -> tuple[bool, str]:
 
 def _normalize(text: str) -> str:
     """Normalize text for substring comparison: strip markdown, collapse whitespace, lowercase."""
-    text = re.sub(r"\*\*|__|\*|_|`", "", text)
+    text = re.sub(r"\*\*|__|\*|_|`|~~", "", text)  # bold, italic, code, strikethrough
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)  # [text](url) → text
+    text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)  # heading markers
+    text = re.sub(r"\|", " ", text)  # table pipes
+    text = re.sub(r"[—–]", "-", text)  # em/en dashes → hyphen
     text = re.sub(r"\s+", " ", text)
     return text.strip().lower()
 
