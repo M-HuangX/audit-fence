@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
 import json
 import time
 from dataclasses import asdict, dataclass, field
@@ -78,6 +77,13 @@ class ClaimRecord:
     metadata: dict = field(default_factory=dict)
     """Extensible metadata for domain-specific fields."""
 
+    # Evidence chain (optional)
+    upstream_id: int = -1
+    """ID of an upstream claim this record traces back to (-1 = none)."""
+
+    upstream_fence: str = ""
+    """Name of the fence that holds the upstream claim."""
+
     id: int = field(default_factory=_next_claim_id)
     """Auto-incrementing claim ID."""
 
@@ -96,7 +102,8 @@ def create_record_tool(
     extra_fields: list[str] | None = None,
     require_search: bool = True,
     require_claim_in_document: bool = True,
-    skip_search_for: list[str] | None = None,
+    skip_enforcement: dict[str, Any] | Callable[[dict], bool] | None = None,
+    enrich: Callable[[ClaimRecord], ClaimRecord] | None = None,
 ) -> Callable:
     """Create an enforcement-checked record tool that produces ClaimRecords.
 
@@ -116,14 +123,52 @@ def create_record_tool(
             history (standard fence enforcement).
         require_claim_in_document: If True (default), claim_in_document
             must be found in the fence's document (if set).
-        skip_search_for: List of verdict values that bypass the search
-            requirement (e.g. ``["not-found", "derived"]``).
+        skip_enforcement: Conditions under which search enforcement is
+            skipped.  Two forms are accepted:
+
+            * **dict** — ``{field_name: [values]}``.  Search enforcement
+              is skipped when *any* field in the record kwargs matches one
+              of the listed values.  Example::
+
+                  skip_enforcement={"verdict": ["not-found", "derived"]}
+                  skip_enforcement={"source_type": ["kb", "web", "derived"]}
+
+            * **callable** — ``fn(kwargs) -> bool``.  Receives the full
+              keyword arguments dict and returns ``True`` to skip.
+              Example::
+
+                  skip_enforcement=lambda kw: kw.get("confidence", 0) > 0.9
+
+        enrich: Optional callback invoked after a :class:`ClaimRecord` is
+            created but *before* it is persisted.  Use this to resolve
+            source coordinates, link upstream claims, or compute derived
+            fields.  The callback receives the record and must return a
+            (possibly modified) ``ClaimRecord``::
+
+                def resolve(r: ClaimRecord) -> ClaimRecord:
+                    r.source_tool = lookup(r.search_file, r.search_line)
+                    return r
 
     Returns:
         A callable record tool with fence enforcement.
     """
     extra = extra_fields or []
-    skip_verdicts = set(skip_search_for or [])
+    _enrich = enrich
+
+    # Build the skip predicate from the user-provided spec.
+    if skip_enforcement is None:
+        _should_skip: Callable[[dict], bool] = lambda kw: False  # noqa: E731
+    elif callable(skip_enforcement) and not isinstance(skip_enforcement, dict):
+        _should_skip = skip_enforcement
+    else:
+        # dict form: {field: [values]}
+        _skip_map: dict[str, Any] = skip_enforcement  # type: ignore[assignment]
+
+        def _should_skip(kw: dict) -> bool:
+            for field_name, values in _skip_map.items():
+                if kw.get(field_name, "") in values:
+                    return True
+            return False
 
     # Build the base function signature dynamically
     # Core params are always present; extras are optional kwargs
@@ -143,6 +188,10 @@ def create_record_tool(
                 record_kwargs[f] = kwargs[f]
         record = ClaimRecord(**record_kwargs)
 
+        # Enrichment hook: resolve source, link upstream, etc.
+        if _enrich is not None:
+            record = _enrich(record)
+
         # Append to fence claims list
         fence._claims.append(record)
 
@@ -156,7 +205,7 @@ def create_record_tool(
     _make_record.__qualname__ = name
     _make_record.__doc__ = doc
 
-    if not require_search and not skip_verdicts:
+    if not require_search and skip_enforcement is None:
         # No enforcement needed at all -- just track as submit
         @wraps(_make_record)
         def unguarded(
@@ -185,8 +234,7 @@ def create_record_tool(
         fence._submit_fns.append(unguarded)
         return unguarded
 
-    # With enforcement: we need a wrapper that conditionally skips
-    # search enforcement for certain verdicts
+    # With enforcement: wrapper that conditionally skips via _should_skip
     @wraps(_make_record)
     def guarded(
         claim: str = "",
@@ -194,16 +242,14 @@ def create_record_tool(
         evidence: str = "",
         **kwargs: Any,
     ) -> Any:
-        verdict_val = kwargs.get("verdict", "")
-
         # Check claim_in_document if required
         if require_claim_in_document and claim_in_document:
             err = fence._check_claim_in_document(claim_in_document)
             if err is not None:
                 return err
 
-        # Skip search enforcement for certain verdicts
-        if require_search and verdict_val not in skip_verdicts:
+        # Skip search enforcement when the predicate says so
+        if require_search and not _should_skip(kwargs):
             # Check 1: search history must exist
             if not fence._collect_history():
                 err = (

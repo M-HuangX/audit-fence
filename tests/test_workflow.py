@@ -483,15 +483,15 @@ def test_factory_enforcement():
     assert len(fence.claims) == 0
 
 
-def test_factory_skip_search_for():
-    """Certain verdicts should bypass search requirement."""
+def test_factory_skip_enforcement_dict():
+    """Certain verdicts should bypass search requirement (dict form)."""
     reset_claim_ids()
     fence = Fence()
 
     record = create_record_tool(
         fence,
         extra_fields=["verdict"],
-        skip_search_for=["not-found", "derived"],
+        skip_enforcement={"verdict": ["not-found", "derived"]},
         require_claim_in_document=False,
     )
 
@@ -747,7 +747,7 @@ def test_full_audit_workflow(tmp_path):
     record = create_record_tool(
         fence,
         extra_fields=["source_tool", "raw_value", "verdict"],
-        skip_search_for=["not-found"],
+        skip_enforcement={"verdict": ["not-found"]},
     )
 
     # Search and record revenue
@@ -879,3 +879,277 @@ def test_reset_clears_claims():
 
     fence.reset()
     assert len(fence.claims) == 0
+
+
+# ============================================================================
+# SKIP_ENFORCEMENT — DICT & CALLABLE FORMS
+# ============================================================================
+
+
+def test_skip_enforcement_by_source_type():
+    """Dict form: skip based on source_type (not verdict)."""
+    reset_claim_ids()
+    fence = Fence()
+
+    record = create_record_tool(
+        fence,
+        extra_fields=["source_type"],
+        skip_enforcement={"source_type": ["kb", "web", "derived"]},
+        require_claim_in_document=False,
+    )
+
+    # No search, source_type="kb" → should pass (skipped)
+    result = record(
+        claim="KB claim",
+        claim_in_document="kb data",
+        evidence="knowledge base entry: stored fact about revenue",
+        source_type="kb",
+    )
+    assert isinstance(result, ClaimRecord)
+    assert result.source_type == "kb"
+
+    # No search, source_type="standard" → should fail (not skipped)
+    result = record(
+        claim="Standard claim",
+        claim_in_document="standard data",
+        evidence="this should be rejected because no search performed",
+        source_type="standard",
+    )
+    assert isinstance(result, str)
+    assert "ERROR" in result
+
+
+def test_skip_enforcement_callable():
+    """Callable form: skip when custom predicate returns True."""
+    reset_claim_ids()
+    fence = Fence()
+
+    record = create_record_tool(
+        fence,
+        skip_enforcement=lambda kw: kw.get("confidence", 0) > 0.9,
+        require_claim_in_document=False,
+    )
+
+    # No search, confidence=0.95 → should pass (skipped)
+    # Note: confidence is NOT a ClaimRecord field — it lives only in kwargs
+    # and is visible to the skip_enforcement predicate.
+    result = record(
+        claim="High confidence claim",
+        claim_in_document="confident data",
+        evidence="pre-verified evidence from trusted external system",
+        confidence=0.95,
+    )
+    assert isinstance(result, ClaimRecord)
+
+    # No search, confidence=0.5 → should fail (not skipped)
+    result = record(
+        claim="Low confidence claim",
+        claim_in_document="uncertain data",
+        evidence="unverified evidence that should be rejected here",
+        confidence=0.5,
+    )
+    assert isinstance(result, str)
+    assert "ERROR" in result
+
+
+def test_skip_enforcement_multi_field_dict():
+    """Dict with multiple fields: skip if ANY field matches."""
+    reset_claim_ids()
+    fence = Fence()
+
+    record = create_record_tool(
+        fence,
+        extra_fields=["verdict", "source_type"],
+        skip_enforcement={
+            "verdict": ["not-found"],
+            "source_type": ["kb", "web"],
+        },
+        require_claim_in_document=False,
+    )
+
+    # No search, verdict="not-found" → skip (first field matches)
+    result = record(
+        claim="Missing",
+        claim_in_document="missing",
+        evidence="No evidence found for this claim at all anywhere",
+        verdict="not-found",
+        source_type="standard",
+    )
+    assert isinstance(result, ClaimRecord)
+
+    # No search, source_type="kb" → skip (second field matches)
+    result = record(
+        claim="KB fact",
+        claim_in_document="kb fact",
+        evidence="knowledge base: stored assertion about the company",
+        verdict="found",
+        source_type="kb",
+    )
+    assert isinstance(result, ClaimRecord)
+
+    # No search, verdict="found" + source_type="standard" → fail
+    result = record(
+        claim="Standard found",
+        claim_in_document="standard",
+        evidence="should be rejected because no field matches skip map",
+        verdict="found",
+        source_type="standard",
+    )
+    assert isinstance(result, str)
+    assert "ERROR" in result
+
+
+def test_skip_enforcement_still_checks_document():
+    """Even when search is skipped, claim_in_document should still be checked."""
+    reset_claim_ids()
+    fence = Fence()
+    fence.set_document("Revenue was $5.1B in FY2025.")
+
+    record = create_record_tool(
+        fence,
+        extra_fields=["verdict"],
+        skip_enforcement={"verdict": ["not-found"]},
+        require_claim_in_document=True,
+    )
+
+    # Search skipped (not-found), but claim_in_document is wrong → fail
+    result = record(
+        claim="Missing revenue",
+        claim_in_document="this text is not in the document at all",
+        evidence="No evidence found for this particular missing claim",
+        verdict="not-found",
+    )
+    assert isinstance(result, str)
+    assert "ERROR" in result
+
+
+# ============================================================================
+# ENRICH HOOK
+# ============================================================================
+
+
+def test_enrich_basic():
+    """enrich callback should modify ClaimRecord before persistence."""
+    reset_claim_ids()
+    fence = Fence()
+
+    def add_source(record: ClaimRecord) -> ClaimRecord:
+        record.source_tool = "auto_resolved_tool"
+        record.source_index = 42
+        return record
+
+    @fence.track
+    def search(query: str) -> str:
+        return "line 10: data found in search results output"
+
+    record = create_record_tool(
+        fence,
+        enrich=add_source,
+        require_claim_in_document=False,
+    )
+    search("test")
+
+    result = record(
+        claim="Test claim",
+        claim_in_document="data",
+        evidence="line 10: data found in search results output",
+    )
+    assert isinstance(result, ClaimRecord)
+    assert result.source_tool == "auto_resolved_tool"
+    assert result.source_index == 42
+    # Should also be in fence.claims
+    assert fence.claims[0].source_tool == "auto_resolved_tool"
+
+
+def test_enrich_sets_upstream(tmp_path):
+    """enrich callback can set upstream_id/upstream_fence for chaining."""
+    reset_claim_ids()
+    fence = Fence()
+    output_file = str(tmp_path / "enriched.jsonl")
+    fence.set_output(output_file)
+
+    def link_upstream(record: ClaimRecord) -> ClaimRecord:
+        record.upstream_id = 7
+        record.upstream_fence = "r1_fundamental"
+        return record
+
+    @fence.track
+    def search(query: str) -> str:
+        return "line 10: evidence found in the output results"
+
+    record = create_record_tool(
+        fence,
+        enrich=link_upstream,
+        require_claim_in_document=False,
+    )
+    search("test")
+
+    result = record(
+        claim="Linked claim",
+        claim_in_document="evidence",
+        evidence="line 10: evidence found in the output results",
+    )
+    assert isinstance(result, ClaimRecord)
+    assert result.upstream_id == 7
+    assert result.upstream_fence == "r1_fundamental"
+
+    # Verify JSONL includes upstream fields
+    with open(output_file) as f:
+        data = json.loads(f.readline())
+    assert data["upstream_id"] == 7
+    assert data["upstream_fence"] == "r1_fundamental"
+
+
+def test_enrich_none_is_noop():
+    """enrich=None should not affect record creation."""
+    reset_claim_ids()
+    fence = Fence()
+
+    @fence.track
+    def search(query: str) -> str:
+        return "line 10: data found in search results output"
+
+    record = create_record_tool(
+        fence, enrich=None, require_claim_in_document=False
+    )
+    search("test")
+
+    result = record(
+        claim="Plain",
+        claim_in_document="data",
+        evidence="line 10: data found in search results output",
+    )
+    assert isinstance(result, ClaimRecord)
+    assert result.source_tool == ""  # default, not enriched
+
+
+# ============================================================================
+# CLAIM RECORD — UPSTREAM FIELDS
+# ============================================================================
+
+
+def test_claim_record_upstream_defaults():
+    """upstream_id and upstream_fence should default to no-link."""
+    reset_claim_ids()
+    record = ClaimRecord(claim="c", claim_in_document="cid", evidence="e")
+    assert record.upstream_id == -1
+    assert record.upstream_fence == ""
+
+
+def test_claim_record_upstream_serialization():
+    """Upstream fields should survive to_dict() and JSON roundtrip."""
+    reset_claim_ids()
+    record = ClaimRecord(
+        claim="c",
+        claim_in_document="cid",
+        evidence="e",
+        upstream_id=5,
+        upstream_fence="r1_fundamental",
+    )
+    d = record.to_dict()
+    assert d["upstream_id"] == 5
+    assert d["upstream_fence"] == "r1_fundamental"
+    # JSON roundtrip
+    d2 = json.loads(json.dumps(d))
+    assert d2["upstream_id"] == 5
+    assert d2["upstream_fence"] == "r1_fundamental"

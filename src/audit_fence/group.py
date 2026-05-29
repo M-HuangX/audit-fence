@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .fence import Fence, SearchRecord
+from .workflow import ClaimRecord
 
 
 class FenceGroup:
@@ -85,6 +86,45 @@ class FenceGroup:
             records.extend(fence.history)
         records.sort(key=lambda r: r.timestamp)
         return records
+
+    @property
+    def all_claims(self) -> list[ClaimRecord]:
+        """All claims from all fences, sorted by timestamp."""
+        claims: list[ClaimRecord] = []
+        for fence in self._fences.values():
+            claims.extend(fence.claims)
+        claims.sort(key=lambda c: c.timestamp)
+        return claims
+
+    def trace_chain(self, claim: ClaimRecord) -> list[ClaimRecord]:
+        """Follow upstream links to build the full evidence chain.
+
+        Returns a list starting from *claim* and walking back through
+        ``upstream_fence`` / ``upstream_id`` until a root (no upstream)
+        is reached.  Cycle-safe (uses Python object identity).
+
+        Example::
+
+            chain = group.trace_chain(final_claim)
+            # [final_claim, intermediate_claim, source_claim]
+        """
+        chain: list[ClaimRecord] = [claim]
+        seen: set[int] = {id(claim)}
+        current = claim
+        while current.upstream_id >= 0 and current.upstream_fence:
+            fence = self.get(current.upstream_fence)
+            if fence is None:
+                break
+            upstream = next(
+                (c for c in fence.claims if c.id == current.upstream_id),
+                None,
+            )
+            if upstream is None or id(upstream) in seen:
+                break
+            seen.add(id(upstream))
+            chain.append(upstream)
+            current = upstream
+        return chain
 
     def save_log(self, path: str | Path) -> None:
         """Save all rejections from all fences to a JSONL file."""

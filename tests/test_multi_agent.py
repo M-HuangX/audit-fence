@@ -3,7 +3,8 @@
 import json
 import time
 
-from audit_fence import Fence, FenceGroup, SearchRecord
+from audit_fence import ClaimRecord, Fence, FenceGroup, SearchRecord, create_record_tool
+from audit_fence.workflow import reset_claim_ids
 
 
 # ============================================================================
@@ -820,3 +821,250 @@ def test_enforce_decorator_with_linked_fence():
     assert isinstance(result, dict)
     assert result["status"] == "ok"
     assert len(manager.rejections) == 0
+
+
+# ============================================================================
+# ALL_CLAIMS
+# ============================================================================
+
+
+def test_group_all_claims():
+    """all_claims should return claims from all fences sorted by timestamp."""
+    reset_claim_ids()
+    group = FenceGroup()
+    fence_a = group.create("a")
+    fence_b = group.create("b")
+
+    @fence_a.track
+    def search_a(query: str) -> str:
+        return "a found data in the search results with context"
+
+    @fence_b.track
+    def search_b(query: str) -> str:
+        return "b found data in the search results with context"
+
+    rec_a = create_record_tool(fence_a, name="rec_a", require_claim_in_document=False)
+    rec_b = create_record_tool(fence_b, name="rec_b", require_claim_in_document=False)
+
+    search_a("query")
+    rec_a(claim="Claim A", claim_in_document="a", evidence="a found data in the search results with context")
+
+    search_b("query")
+    rec_b(claim="Claim B", claim_in_document="b", evidence="b found data in the search results with context")
+
+    all_c = group.all_claims
+    assert len(all_c) == 2
+    assert all_c[0].timestamp <= all_c[1].timestamp
+
+
+def test_group_all_claims_empty():
+    """all_claims on empty group should return []."""
+    group = FenceGroup()
+    group.create("empty")
+    assert group.all_claims == []
+
+
+# ============================================================================
+# TRACE_CHAIN — EVIDENCE CHAIN TRAVERSAL
+# ============================================================================
+
+
+def _build_two_level_group():
+    """Helper: build a group with R1 and R2a fences and linked claims."""
+    reset_claim_ids()
+    group = FenceGroup()
+    r1 = group.create("r1")
+    r2a = group.create("r2a")
+
+    @r1.track
+    def search_r1(query: str) -> str:
+        return "tools/fundamental.json:18: pe_ratio: 18.923 in output"
+
+    @r2a.track
+    def search_r2a(query: str) -> str:
+        return "specialist_outputs/fund.md:45: P/E ratio of 18.9x"
+
+    # R1 records a claim
+    rec_r1 = create_record_tool(
+        r1, name="record_r1", require_claim_in_document=False,
+        extra_fields=["verdict"],
+    )
+    search_r1("pe_ratio")
+    r1_claim = rec_r1(
+        claim="P/E ratio of 18.9x",
+        claim_in_document="pe_ratio",
+        evidence="tools/fundamental.json:18: pe_ratio: 18.923 in output",
+        verdict="found",
+    )
+
+    # R2a records a claim that links back to R1
+    def link_to_r1(record: ClaimRecord) -> ClaimRecord:
+        record.upstream_id = r1_claim.id
+        record.upstream_fence = "r1"
+        return record
+
+    rec_r2a = create_record_tool(
+        r2a, name="record_r2a", require_claim_in_document=False,
+        enrich=link_to_r1,
+    )
+    search_r2a("P/E")
+    r2a_claim = rec_r2a(
+        claim="Report states P/E of 18.9x",
+        claim_in_document="P/E",
+        evidence="specialist_outputs/fund.md:45: P/E ratio of 18.9x",
+    )
+
+    return group, r1_claim, r2a_claim
+
+
+def test_trace_chain_two_levels():
+    """trace_chain should follow one upstream link."""
+    group, r1_claim, r2a_claim = _build_two_level_group()
+
+    chain = group.trace_chain(r2a_claim)
+    assert len(chain) == 2
+    assert chain[0] is r2a_claim
+    assert chain[1].id == r1_claim.id
+    assert chain[1].claim == "P/E ratio of 18.9x"
+
+
+def test_trace_chain_root():
+    """trace_chain on a root claim (no upstream) should return [claim]."""
+    group, r1_claim, _ = _build_two_level_group()
+
+    chain = group.trace_chain(r1_claim)
+    assert len(chain) == 1
+    assert chain[0] is r1_claim
+
+
+def test_trace_chain_three_levels():
+    """trace_chain should traverse multi-hop chains."""
+    reset_claim_ids()
+    group = FenceGroup()
+    source = group.create("source")
+    mid = group.create("mid")
+    final = group.create("final")
+
+    @source.track
+    def search_s(q: str) -> str:
+        return "raw tool output data found in the source"
+
+    @mid.track
+    def search_m(q: str) -> str:
+        return "intermediate analysis output data with context"
+
+    @final.track
+    def search_f(q: str) -> str:
+        return "report text with final claim and evidence data"
+
+    # Source claim
+    rec_s = create_record_tool(source, name="rec_s", require_claim_in_document=False)
+    search_s("data")
+    source_claim = rec_s(
+        claim="Source fact",
+        claim_in_document="data",
+        evidence="raw tool output data found in the source",
+    )
+
+    # Mid claim → links to source
+    rec_m = create_record_tool(
+        mid, name="rec_m", require_claim_in_document=False,
+        enrich=lambda r: _set_upstream(r, source_claim.id, "source"),
+    )
+    search_m("analysis")
+    mid_claim = rec_m(
+        claim="Intermediate finding",
+        claim_in_document="analysis",
+        evidence="intermediate analysis output data with context",
+    )
+
+    # Final claim → links to mid
+    rec_f = create_record_tool(
+        final, name="rec_f", require_claim_in_document=False,
+        enrich=lambda r: _set_upstream(r, mid_claim.id, "mid"),
+    )
+    search_f("report")
+    final_claim = rec_f(
+        claim="Report conclusion",
+        claim_in_document="report",
+        evidence="report text with final claim and evidence data",
+    )
+
+    chain = group.trace_chain(final_claim)
+    assert len(chain) == 3
+    assert chain[0].claim == "Report conclusion"
+    assert chain[1].claim == "Intermediate finding"
+    assert chain[2].claim == "Source fact"
+
+
+def _set_upstream(record: ClaimRecord, uid: int, fence_name: str) -> ClaimRecord:
+    """Test helper: set upstream link on a ClaimRecord."""
+    record.upstream_id = uid
+    record.upstream_fence = fence_name
+    return record
+
+
+def test_trace_chain_missing_fence():
+    """trace_chain should stop when upstream fence doesn't exist."""
+    reset_claim_ids()
+    group = FenceGroup()
+    f = group.create("only")
+
+    claim = ClaimRecord(
+        claim="orphan",
+        claim_in_document="o",
+        evidence="e",
+        upstream_id=99,
+        upstream_fence="nonexistent",
+    )
+    f._claims.append(claim)
+
+    chain = group.trace_chain(claim)
+    assert len(chain) == 1  # stops at orphan
+
+
+def test_trace_chain_missing_claim_id():
+    """trace_chain should stop when upstream claim ID doesn't exist."""
+    reset_claim_ids()
+    group = FenceGroup()
+    f = group.create("only")
+
+    @f.track
+    def search(q: str) -> str:
+        return "some search results with evidence data here"
+
+    rec = create_record_tool(f, name="rec", require_claim_in_document=False)
+    search("test")
+    claim = rec(
+        claim="lonely",
+        claim_in_document="search",
+        evidence="some search results with evidence data here",
+    )
+    # Manually set upstream to non-existent ID
+    claim.upstream_id = 999
+    claim.upstream_fence = "only"
+
+    chain = group.trace_chain(claim)
+    assert len(chain) == 1  # stops because ID 999 doesn't exist
+
+
+def test_trace_chain_cycle_safe():
+    """trace_chain should not loop if claims form a cycle."""
+    reset_claim_ids()
+    group = FenceGroup()
+    f = group.create("cycle")
+
+    c1 = ClaimRecord(claim="A", claim_in_document="a", evidence="e")
+    c2 = ClaimRecord(claim="B", claim_in_document="b", evidence="e")
+    c1.upstream_id = c2.id
+    c1.upstream_fence = "cycle"
+    c2.upstream_id = c1.id
+    c2.upstream_fence = "cycle"
+
+    f._claims.extend([c1, c2])
+
+    chain = group.trace_chain(c1)
+    # Should visit c1 → c2 then stop (c1 already visited)
+    assert len(chain) == 2
+    assert chain[0].claim == "A"
+    assert chain[1].claim == "B"
