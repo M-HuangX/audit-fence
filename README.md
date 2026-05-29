@@ -28,6 +28,8 @@ Most AI tools today — ChatGPT, Gemini, Deep Research, Perplexity — let the L
 
 There is **no traceable chain** from claim to source data. The citation is an assertion, not a verifiable link. For a blog post, that's fine. For a financial report that a compliance officer must sign off on, it's not.
 
+Recent [mechanistic analysis of transformer internals](https://doi.org/10.1007/978-3-032-21324-2_35) confirms why this is unreliable: LLM citation decisions rely heavily on shallow heuristics like entity name co-occurrence — the model matches surface patterns rather than genuinely verifying that the cited source supports the claim.
+
 ### Generation-time validation — existence, not correspondence
 
 Tools like [instructor](https://github.com/jxnl/instructor) improve on this with structured output validation: every quote the LLM produces must be a verified substring of the source text. If the citation doesn't exist in the original document, the model is asked to retry.
@@ -93,17 +95,17 @@ By requiring a `search()` call before every `submit()`, audit-fence forces the r
 
 ### How audit-fence compares
 
-| | Self-declared | Generation-time validated | **Enforced tracing** |
-|---|---|---|---|
-| **Examples** | ChatGPT, Gemini, Deep Research | instructor, Pydantic validators | **audit-fence** |
-| **Traceability** | None — citation is an assertion | Partial — quote exists in source | Claim → search result → source data |
-| **Who is constrained** | Nobody | The writer | The agent doing the tracing |
-| **When** | During generation | During generation | After the report exists |
-| **Prevents fabricated evidence** | No | Partially (existence only) | Yes (must prove search happened) |
-| **Reduces wrong attribution** | No | No | Yes (targeted search per claim) |
-| **Audit trail** | None | Retry silently | Full rejection log (JSONL) |
+| | Self-declared | Generation-time validated | Post-hoc NLI-verified | **Enforced tracing** |
+|---|---|---|---|---|
+| **Examples** | ChatGPT, Gemini, Deep Research | instructor, Pydantic validators | [VeriCite](https://arxiv.org/abs/2510.11394) | **audit-fence** |
+| **Traceability** | None — citation is an assertion | Partial — quote exists in source | Claim → passage (semantic match) | Claim → search result → source data |
+| **Who is constrained** | Nobody | The writer | The auditor (by another model) | The auditor (by code) |
+| **Verifier** | None | Schema validator | NLI model (~80% accuracy) | Deterministic substring match |
+| **When** | During generation | During generation | After generation | After generation |
+| **Prevents fabricated evidence** | No | Partially (existence only) | Mostly (but NLI can misjudge) | Yes (must prove search happened) |
+| **Audit trail** | None | Retry silently | NLI scores per statement | Full rejection log (JSONL) |
 
-These approaches are complementary. Generation-time validation improves output quality; audit-fence provides the traceable evidence chain after the fact. Different stages, different guarantees.
+These approaches are complementary, not competing. Generation-time validation improves output quality. Post-hoc NLI verification catches unsupported statements. audit-fence ensures the tracing process itself is trustworthy — the evidence you record is the evidence you actually found. Different stages, different guarantees.
 
 ---
 
