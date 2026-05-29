@@ -35,6 +35,26 @@ The agent's evidence submission tool **programmatically validates** that the sub
 
 This is not an arbitrary constraint. It exploits a known property of transformer attention: when a context window is packed with a report, source data, and reasoning traces, **information in the middle is most prone to hallucination** (the "lost in the middle" effect). By forcing a fresh search before each evidence submission, the relevant data is placed at the **tail of the context window** — where attention is strongest. The enforcement doesn't just validate; it structurally reduces the conditions under which hallucination occurs.
 
+## Why Post-Hoc Audit, Not Generation-Time Validation?
+
+Some tools validate citations at generation time — requiring every quote the LLM produces to be a substring of the source text (e.g., [instructor](https://github.com/jxnl/instructor)'s `substring_quote` pattern). This is useful for structured extraction. But it is insufficient for report-level auditing, for three reasons:
+
+**Existence ≠ Correspondence.** A substring check proves a quote *exists* in the source. It cannot prove it's the *right* quote for the claim. When the context window contains thousands of lines, the model may cite a real passage containing "26%" — but from a different metric, a different entity, a different time period. The citation passes validation. The attribution is wrong. This failure mode is invisible to any system that only checks "does this string appear somewhere in the text."
+
+**Analysis and citation should be separate tasks.** Asking an LLM to simultaneously write analysis and attach precise citations degrades both — it is multitasking in a domain where precision matters. Independent engineering teams have found that separating claim generation from evidence retrieval — first write, then trace each claim back to its source — [reduces hallucination rates from ~30% to under 1%](https://medium.com/lets-code-future/how-to-make-llms-cite-their-sources-and-why-rag-isnt-enough-86a9b107feed). The LLM performs better on focused, single-purpose work: "find evidence for *this specific claim*" yields far more reliable citations than "write a report and cite everything as you go."
+
+**Who audits the auditor?** Generation-time validators trust the model: if it produces a valid substring, the citation is accepted. In a post-hoc audit, the *auditor itself* is an LLM that can fabricate evidence just as easily. audit-fence adds a constraint that no generation-time tool provides: it verifies the audit agent's evidence comes from searches it actually performed — not from memory, paraphrase, or confabulation.
+
+| | Generation-time validators | audit-fence |
+|---|---|---|
+| **When** | During report writing | After the report exists |
+| **Who is constrained** | The writer (report-generating LLM) | The auditor (independent verification agent) |
+| **What is validated** | Quote ∈ static source text fed to the model | Evidence ∈ agent's real, recorded search history |
+| **On failure** | Retry generation (goal: produce output) | Reject + log (goal: determine ground truth) |
+| **Prerequisite** | You control the generation process | Report + generation traces + raw data all exist |
+
+These approaches are complementary. You can use structured output validation during generation *and* audit-fence for post-hoc verification. audit-fence doesn't help you write better citations — it helps you **verify** them, with a constraint that even the verifier cannot bypass.
+
 ## Quick Start
 
 ```bash
