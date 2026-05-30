@@ -293,7 +293,7 @@ for fn in fence.tools:
 
 ## Structured Claims
 
-The core `@fence.track` / `@fence.enforce` decorators work with any function signature. For audit workflows that produce structured claim records — with verdicts, source provenance, and evidence chains — audit-fence provides a higher-level API.
+The core `@fence.track` / `@fence.enforce` decorators work with any function signature. For audit workflows that produce structured claim records — with findings, source provenance, and evidence chains — audit-fence provides a higher-level API.
 
 ### ClaimRecord
 
@@ -309,7 +309,7 @@ record = ClaimRecord(
     source_tool="get_stock_info",                         # which tool produced the source data
     source_index=0,                                       # tool call index
     raw_value="18.923",                                   # exact value from source
-    verdict="found",                                      # user-defined (no built-in taxonomy)
+    finding="found",                                      # agent-assigned (no built-in taxonomy)
     source_type="standard",                               # standard | kb | web | computation | custom
 )
 ```
@@ -330,7 +330,7 @@ fence.set_output("audit/citations.jsonl")   # auto-append each record
 record = create_record_tool(
     fence,
     name="record_citation",
-    extra_fields=["verdict", "source_tool", "raw_value", "grep_file", "grep_line"],
+    extra_fields=["finding", "source_tool", "raw_value", "grep_file", "grep_line"],
 )
 
 # Usage: search first, then record
@@ -339,7 +339,7 @@ result = record(
     claim="Revenue was $5.1B",
     claim_in_document="revenue of $5.1 billion",
     evidence="fundamental.json:42: totalRevenue: 5098000000",
-    verdict="found",               # known field -> ClaimRecord.verdict
+    finding="found",               # known field -> ClaimRecord.finding
     source_tool="get_stock_info",   # known field -> ClaimRecord.source_tool
     raw_value="5098000000",         # known field -> ClaimRecord.raw_value
     grep_file="fundamental.json",   # unknown field -> ClaimRecord.metadata["grep_file"]
@@ -353,23 +353,23 @@ result = record(
 
 ### Conditional enforcement
 
-Sometimes certain record types should bypass search enforcement — a "not-found" verdict doesn't have evidence to match, a "kb" source type comes from a knowledge base rather than a search.
+Sometimes certain record types should bypass search enforcement — a "not-found" finding doesn't have evidence to match, a "kb" source type comes from a knowledge base rather than a search.
 
 **Dict form** — skip when any field matches a listed value:
 
 ```python
 record = create_record_tool(
     fence,
-    extra_fields=["verdict"],
-    skip_enforcement={"verdict": ["not-found", "derived"]},
+    extra_fields=["finding"],
+    skip_enforcement={"finding": ["not-found", "derived"]},
 )
 
 # Multiple fields — skip if ANY matches
 record = create_record_tool(
     fence,
-    extra_fields=["verdict", "source_type"],
+    extra_fields=["finding", "source_type"],
     skip_enforcement={
-        "verdict": ["not-found"],
+        "finding": ["not-found"],
         "source_type": ["kb", "web"],
     },
 )
@@ -415,7 +415,7 @@ When `enrich` returns `None`, the record is not persisted. The rejection is logg
 ```python
 record = create_record_tool(
     fence,
-    on_record=lambda r: print(f"Recorded #{r.id}: {r.verdict} — {r.claim[:50]}"),
+    on_record=lambda r: print(f"Recorded #{r.id}: {r.finding} — {r.claim[:50]}"),
     on_reject=lambda tool, content, reason: log.warning(f"[{tool}] {reason}"),
 )
 ```

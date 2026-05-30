@@ -887,14 +887,14 @@ def _build_two_level_group():
     # R1 records a claim
     rec_r1 = create_record_tool(
         r1, name="record_r1", require_claim_in_document=False,
-        extra_fields=["verdict"],
+        extra_fields=["finding"],
     )
     search_r1("pe_ratio")
     r1_claim = rec_r1(
         claim="P/E ratio of 18.9x",
         claim_in_document="pe_ratio",
         evidence="tools/fundamental.json:18: pe_ratio: 18.923 in output",
-        verdict="found",
+        finding="found",
     )
 
     # R2a records a claim that links back to R1

@@ -32,7 +32,7 @@ def reset_claim_ids() -> None:
 class ClaimRecord:
     """A recorded audit claim linking a document statement to source evidence.
 
-    Fields are deliberately generic -- users define their own verdict
+    Fields are deliberately generic -- users define their own finding
     taxonomy and source_type values.
     """
 
@@ -67,8 +67,8 @@ class ClaimRecord:
     """Line number in file."""
 
     # Classification
-    verdict: str = ""
-    """User-defined verdict (no built-in taxonomy)."""
+    finding: str = ""
+    """Agent-assigned finding (e.g. 'found', 'not-found'). No built-in taxonomy."""
 
     source_type: str = "standard"
     """Evidence type: 'standard', 'kb', 'web', 'computation', or user-defined."""
@@ -124,7 +124,7 @@ def create_record_tool(
         doc: Docstring for the returned tool.
         extra_fields: Additional field names to accept as parameters.
             Fields that match :class:`ClaimRecord` attributes (e.g.
-            ``"verdict"``, ``"source_tool"``) are set directly.
+            ``"finding"``, ``"source_tool"``) are set directly.
             Unrecognized fields are stored in the record's ``metadata``
             dict, so domain-specific data is preserved without schema
             changes.
@@ -139,7 +139,7 @@ def create_record_tool(
               is skipped when *any* field in the record kwargs matches one
               of the listed values.  Example::
 
-                  skip_enforcement={"verdict": ["not-found", "derived"]}
+                  skip_enforcement={"finding": ["not-found", "derived"]}
                   skip_enforcement={"source_type": ["kb", "web", "derived"]}
 
             * **callable** — ``fn(kwargs) -> bool``.  Receives the full

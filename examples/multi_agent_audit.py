@@ -207,7 +207,7 @@ def main():
     def enrich_r1(record: ClaimRecord) -> ClaimRecord | None:
         file = record.metadata.get("grep_file", "")
         line = record.metadata.get("grep_line", -1)
-        if record.verdict in ("not-found", "derived"):
+        if record.finding in ("not-found", "derived"):
             return record  # no resolution needed
         tool_name, index = resolve_tool_call_location(file, line)
         if not tool_name:
@@ -217,7 +217,7 @@ def main():
         return record
 
     # Record tool with:
-    # - skip_enforcement for not-found/derived verdicts
+    # - skip_enforcement for not-found/derived findings
     # - enrich hook for tool call resolution (can reject)
     # - on_record callback for real-time notification
     # - domain-specific extra fields routed to metadata
@@ -225,15 +225,15 @@ def main():
         r1,
         name="record_specialist_claim",
         extra_fields=[
-            "verdict",       # → ClaimRecord.verdict (known field)
+            "finding",       # → ClaimRecord.finding (known field)
             "raw_value",     # → ClaimRecord.raw_value (known field)
             "grep_file",     # → ClaimRecord.metadata["grep_file"] (unknown → metadata)
             "grep_line",     # → ClaimRecord.metadata["grep_line"] (unknown → metadata)
             "output_line",   # → ClaimRecord.metadata["output_line"] (unknown → metadata)
         ],
-        skip_enforcement={"verdict": ["not-found", "derived"]},
+        skip_enforcement={"finding": ["not-found", "derived"]},
         enrich=enrich_r1,
-        on_record=lambda r: print(f"  [R1] Recorded #{r.id}: [{r.verdict}] {r.claim[:50]}"),
+        on_record=lambda r: print(f"  [R1] Recorded #{r.id}: [{r.finding}] {r.claim[:50]}"),
         on_reject=lambda t, c, reason: print(f"  [R1] REJECTED: {reason[:60]}"),
     )
 
@@ -243,7 +243,7 @@ def main():
         claim="Revenue reached $5.1 billion in FY2025",
         claim_in_document="Revenue reached $5.1 billion in FY2025",
         evidence='"totalRevenue": 5098000000  [@ tool_call #0: get_income_statement]',
-        verdict="found",
+        finding="found",
         raw_value="5098000000",
         grep_file="tools/fundamental_tool_calls.json",
         grep_line=8,
@@ -255,7 +255,7 @@ def main():
         claim="Operating margin expanded to 32.1%",
         claim_in_document="Operating margin expanded to 32.1%",
         evidence='"operatingMargin": 0.321  [@ tool_call #1: get_financial_metrics]',
-        verdict="found",
+        finding="found",
         raw_value="0.321",
         grep_file="tools/fundamental_tool_calls.json",
         grep_line=14,
@@ -267,7 +267,7 @@ def main():
         claim="The trailing P/E ratio stands at 18.9x",
         claim_in_document="The trailing P/E ratio stands at 18.9x",
         evidence='"trailingPE": 18.923  [@ tool_call #2: get_stock_info]',
-        verdict="found",
+        finding="found",
         raw_value="18.923",
         grep_file="tools/fundamental_tool_calls.json",
         grep_line=20,
@@ -279,7 +279,7 @@ def main():
         claim="Management guided for 15-20% revenue growth",
         claim_in_document="Management guided for 15-20% revenue growth in FY2026",
         evidence="",
-        verdict="not-found",
+        finding="not-found",
         raw_value="",
         grep_file="",
         grep_line=-1,

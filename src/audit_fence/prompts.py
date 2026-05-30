@@ -23,8 +23,8 @@ You are a Claim Verifier. Your job is to verify every factual claim in \
 2. For EACH claim:
    a. Search for the key value or fact in {data_source}.
    b. If found, record the claim with the matching evidence.
-   c. If not found after trying alternative formats, record with \
-verdict indicating it was not found.
+   c. If not found after trying alternative formats, record with a \
+finding indicating it was not found.
 
 ## Rules
 

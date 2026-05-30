@@ -44,14 +44,14 @@ def test_claim_record_to_dict():
         evidence="test evidence",
         source_tool="get_stock_info",
         raw_value="5098000000",
-        verdict="found",
+        finding="found",
     )
     d = record.to_dict()
     assert isinstance(d, dict)
     assert d["claim"] == "test claim"
     assert d["source_tool"] == "get_stock_info"
     assert d["raw_value"] == "5098000000"
-    assert d["verdict"] == "found"
+    assert d["finding"] == "found"
     # Verify JSON serializable
     json_str = json.dumps(d)
     assert json.loads(json_str) == d
@@ -69,7 +69,7 @@ def test_claim_record_defaults():
     assert record.raw_value == ""
     assert record.search_file == ""
     assert record.search_line == -1
-    assert record.verdict == ""
+    assert record.finding == ""
     assert record.source_type == "standard"
     assert record.metadata == {}
 
@@ -484,26 +484,26 @@ def test_factory_enforcement():
 
 
 def test_factory_skip_enforcement_dict():
-    """Certain verdicts should bypass search requirement (dict form)."""
+    """Certain findings should bypass search requirement (dict form)."""
     reset_claim_ids()
     fence = Fence()
 
     record = create_record_tool(
         fence,
-        extra_fields=["verdict"],
-        skip_enforcement={"verdict": ["not-found", "derived"]},
+        extra_fields=["finding"],
+        skip_enforcement={"finding": ["not-found", "derived"]},
         require_claim_in_document=False,
     )
 
-    # No search, but verdict="not-found" → should pass
+    # No search, but finding="not-found" → should pass
     result = record(
         claim="Missing claim",
         claim_in_document="missing data",
         evidence="No evidence found for this claim in any search result",
-        verdict="not-found",
+        finding="not-found",
     )
     assert isinstance(result, ClaimRecord)
-    assert result.verdict == "not-found"
+    assert result.finding == "not-found"
     assert len(fence.claims) == 1
 
 
@@ -577,7 +577,7 @@ def test_factory_extra_fields():
 
     record = create_record_tool(
         fence,
-        extra_fields=["source_tool", "raw_value", "verdict"],
+        extra_fields=["source_tool", "raw_value", "finding"],
         require_claim_in_document=False,
     )
     search("revenue")
@@ -588,12 +588,12 @@ def test_factory_extra_fields():
         evidence="line 42: revenue was $5.1B in FY2025 output text",
         source_tool="get_stock_info",
         raw_value="5098000000",
-        verdict="found",
+        finding="found",
     )
     assert isinstance(result, ClaimRecord)
     assert result.source_tool == "get_stock_info"
     assert result.raw_value == "5098000000"
-    assert result.verdict == "found"
+    assert result.finding == "found"
 
 
 # ============================================================================
@@ -746,8 +746,8 @@ def test_full_audit_workflow(tmp_path):
 
     record = create_record_tool(
         fence,
-        extra_fields=["source_tool", "raw_value", "verdict"],
-        skip_enforcement={"verdict": ["not-found"]},
+        extra_fields=["source_tool", "raw_value", "finding"],
+        skip_enforcement={"finding": ["not-found"]},
     )
 
     # Search and record revenue
@@ -758,10 +758,10 @@ def test_full_audit_workflow(tmp_path):
         evidence='line 42: "revenue": 5098000000',
         source_tool="get_stock_info",
         raw_value="5098000000",
-        verdict="found",
+        finding="found",
     )
     assert isinstance(result, ClaimRecord)
-    assert result.verdict == "found"
+    assert result.finding == "found"
 
     # Search and record net income
     grep("net_income", "tools/fundamental.json")
@@ -771,7 +771,7 @@ def test_full_audit_workflow(tmp_path):
         evidence='line 88: "net_income": 1200000000',
         source_tool="get_stock_info",
         raw_value="1200000000",
-        verdict="found",
+        finding="found",
     )
     assert isinstance(result, ClaimRecord)
 
@@ -784,7 +784,7 @@ def test_full_audit_workflow(tmp_path):
     with open(output_file) as f:
         lines = [json.loads(line) for line in f]
     assert len(lines) == 2
-    assert lines[0]["verdict"] == "found"
+    assert lines[0]["finding"] == "found"
 
     # Verify sandboxing blocks outside access
     blocked = grep("revenue", "trace/secrets/")
@@ -887,7 +887,7 @@ def test_reset_clears_claims():
 
 
 def test_skip_enforcement_by_source_type():
-    """Dict form: skip based on source_type (not verdict)."""
+    """Dict form: skip based on source_type (not finding)."""
     reset_claim_ids()
     fence = Fence()
 
@@ -959,20 +959,20 @@ def test_skip_enforcement_multi_field_dict():
 
     record = create_record_tool(
         fence,
-        extra_fields=["verdict", "source_type"],
+        extra_fields=["finding", "source_type"],
         skip_enforcement={
-            "verdict": ["not-found"],
+            "finding": ["not-found"],
             "source_type": ["kb", "web"],
         },
         require_claim_in_document=False,
     )
 
-    # No search, verdict="not-found" → skip (first field matches)
+    # No search, finding="not-found" → skip (first field matches)
     result = record(
         claim="Missing",
         claim_in_document="missing",
         evidence="No evidence found for this claim at all anywhere",
-        verdict="not-found",
+        finding="not-found",
         source_type="standard",
     )
     assert isinstance(result, ClaimRecord)
@@ -982,17 +982,17 @@ def test_skip_enforcement_multi_field_dict():
         claim="KB fact",
         claim_in_document="kb fact",
         evidence="knowledge base: stored assertion about the company",
-        verdict="found",
+        finding="found",
         source_type="kb",
     )
     assert isinstance(result, ClaimRecord)
 
-    # No search, verdict="found" + source_type="standard" → fail
+    # No search, finding="found" + source_type="standard" → fail
     result = record(
         claim="Standard found",
         claim_in_document="standard",
         evidence="should be rejected because no field matches skip map",
-        verdict="found",
+        finding="found",
         source_type="standard",
     )
     assert isinstance(result, str)
@@ -1007,8 +1007,8 @@ def test_skip_enforcement_still_checks_document():
 
     record = create_record_tool(
         fence,
-        extra_fields=["verdict"],
-        skip_enforcement={"verdict": ["not-found"]},
+        extra_fields=["finding"],
+        skip_enforcement={"finding": ["not-found"]},
         require_claim_in_document=True,
     )
 
@@ -1017,7 +1017,7 @@ def test_skip_enforcement_still_checks_document():
         claim="Missing revenue",
         claim_in_document="this text is not in the document at all",
         evidence="No evidence found for this particular missing claim",
-        verdict="not-found",
+        finding="not-found",
     )
     assert isinstance(result, str)
     assert "ERROR" in result
@@ -1171,7 +1171,7 @@ def test_extra_fields_metadata_routing():
 
     record = create_record_tool(
         fence,
-        extra_fields=["verdict", "grep_file", "grep_line", "output_line"],
+        extra_fields=["finding", "grep_file", "grep_line", "output_line"],
         require_claim_in_document=False,
     )
     search("revenue")
@@ -1180,14 +1180,14 @@ def test_extra_fields_metadata_routing():
         claim="Revenue was $5.1B",
         claim_in_document="revenue",
         evidence="line 42: revenue data found in search output",
-        verdict="found",
+        finding="found",
         grep_file="tools/data.json",
         grep_line=42,
         output_line=1,
     )
     assert isinstance(result, ClaimRecord)
     # Known field → set directly on record
-    assert result.verdict == "found"
+    assert result.finding == "found"
     # Unknown fields → routed to metadata
     assert result.metadata["grep_file"] == "tools/data.json"
     assert result.metadata["grep_line"] == 42
@@ -1207,7 +1207,7 @@ def test_extra_fields_metadata_serialization(tmp_path):
 
     record = create_record_tool(
         fence,
-        extra_fields=["verdict", "custom_score"],
+        extra_fields=["finding", "custom_score"],
         require_claim_in_document=False,
     )
     search("test")
@@ -1216,13 +1216,13 @@ def test_extra_fields_metadata_serialization(tmp_path):
         claim="Test",
         claim_in_document="evidence",
         evidence="line 10: evidence output from search results",
-        verdict="found",
+        finding="found",
         custom_score=0.95,
     )
 
     with open(output_file) as f:
         data = json.loads(f.readline())
-    assert data["verdict"] == "found"
+    assert data["finding"] == "found"
     assert data["metadata"]["custom_score"] == 0.95
 
 
@@ -1238,7 +1238,7 @@ def test_extra_fields_mixed_known_unknown():
     record = create_record_tool(
         fence,
         extra_fields=[
-            "verdict",           # known → ClaimRecord.verdict
+            "finding",           # known → ClaimRecord.finding
             "source_tool",       # known → ClaimRecord.source_tool
             "raw_value",         # known → ClaimRecord.raw_value
             "specialist_agent",  # unknown → metadata
@@ -1252,7 +1252,7 @@ def test_extra_fields_mixed_known_unknown():
         claim="Test",
         claim_in_document="search",
         evidence="line 10: search output results data here",
-        verdict="found",
+        finding="found",
         source_tool="get_income_statement",
         raw_value="5098000000",
         specialist_agent="fundamental",
@@ -1260,7 +1260,7 @@ def test_extra_fields_mixed_known_unknown():
     )
     assert isinstance(result, ClaimRecord)
     # Known fields set directly
-    assert result.verdict == "found"
+    assert result.finding == "found"
     assert result.source_tool == "get_income_statement"
     assert result.raw_value == "5098000000"
     # Unknown fields in metadata
@@ -1279,7 +1279,7 @@ def test_extra_fields_no_unknown_no_metadata():
 
     record = create_record_tool(
         fence,
-        extra_fields=["verdict", "source_tool"],
+        extra_fields=["finding", "source_tool"],
         require_claim_in_document=False,
     )
     search("test")
@@ -1288,7 +1288,7 @@ def test_extra_fields_no_unknown_no_metadata():
         claim="Test",
         claim_in_document="search",
         evidence="line 10: search output results data here",
-        verdict="found",
+        finding="found",
         source_tool="get_stock_info",
     )
     assert isinstance(result, ClaimRecord)
