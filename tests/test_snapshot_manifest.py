@@ -99,6 +99,7 @@ class TestManifestGeneration:
         assert agent["artifacts"] == ["report.md"]
         assert agent["errors"] == 0
         assert agent["trace_dir"] == "research/"
+        assert agent["trace_bytes"] > 0
 
         assert manifest["dependencies"] == {"analysis": ["research"]}
 

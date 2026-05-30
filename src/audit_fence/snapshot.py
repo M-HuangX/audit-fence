@@ -364,16 +364,17 @@ class _AgentWriter:
 
     def stats(self) -> dict:
         """Return stats for manifest generation."""
-        total_calls = sum(self._tool_counts.values())
-        return {
-            "tool_calls": total_calls,
-            "tools_used": list(self._tool_counts.keys()),
-            "tool_counts": dict(self._tool_counts),
-            "artifacts": list(self._artifacts),
-            "errors": self._errors,
-            "trace_dir": f"{self._agent_name}/",
-            "trace_bytes": self._total_bytes,
-        }
+        with self._lock:
+            total_calls = sum(self._tool_counts.values())
+            return {
+                "tool_calls": total_calls,
+                "tools_used": list(self._tool_counts.keys()),
+                "tool_counts": dict(self._tool_counts),
+                "artifacts": list(self._artifacts),
+                "errors": self._errors,
+                "trace_dir": f"{self._agent_name}/",
+                "trace_bytes": self._total_bytes,
+            }
 
     # ---- internal ----
 

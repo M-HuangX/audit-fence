@@ -65,7 +65,7 @@ Minimal integration. Full traceability. Model-agnostic. Four validation checks, 
 
 **Search** — point audit-fence at your source data directory (where your production system's outputs and trace files are stored) and the audit agent searches them claim by claim using [ripgrep](https://github.com/BurntSushi/ripgrep). Results are automatically tracked for enforcement.
 
-**Evidence submission** — `create_record_tool()` gives you a fully configured submission tool out of the box: enforcement checks, structured `ClaimRecord` output, and auto-persistence to JSONL.
+**Evidence submission** — `fence.record_tool()` gives you a fully configured submission tool out of the box: enforcement checks, structured `ClaimRecord` output, and auto-persistence to JSONL.
 
 Before each submission executes, the fence validates:
 
@@ -368,19 +368,18 @@ record = ClaimRecord(
 
 All fields except `claim`, `claim_in_document`, and `evidence` are optional. IDs auto-increment. Serialize with `record.to_dict()`.
 
-### create_record_tool
+### record_tool
 
-Factory function that creates an enforcement-checked record tool — combines `@fence.enforce` with `ClaimRecord` creation and JSONL persistence:
+Creates an enforcement-checked record tool — combines `@fence.enforce` with `ClaimRecord` creation and JSONL persistence:
 
 ```python
-from audit_fence import Fence, create_record_tool
+from audit_fence import Fence
 
 fence = Fence()
 fence.set_document(report_text)
 fence.set_output("audit/citations.jsonl")   # auto-append each record
 
-record = create_record_tool(
-    fence,
+record = fence.record_tool(
     name="record_citation",
     extra_fields=["finding", "source_tool", "raw_value", "grep_file", "grep_line"],
 )
@@ -410,15 +409,13 @@ Sometimes certain record types should bypass search enforcement — a "not-found
 **Dict form** — skip when any field matches a listed value:
 
 ```python
-record = create_record_tool(
-    fence,
+record = fence.record_tool(
     extra_fields=["finding"],
     skip_enforcement={"finding": ["not-found", "derived"]},
 )
 
 # Multiple fields — skip if ANY matches
-record = create_record_tool(
-    fence,
+record = fence.record_tool(
     extra_fields=["finding", "source_type"],
     skip_enforcement={
         "finding": ["not-found"],
@@ -430,8 +427,7 @@ record = create_record_tool(
 **Callable form** — full flexibility:
 
 ```python
-record = create_record_tool(
-    fence,
+record = fence.record_tool(
     skip_enforcement=lambda kw: kw.get("confidence", 0) > 0.9,
 )
 ```
@@ -453,8 +449,7 @@ def resolve_source(record: ClaimRecord) -> ClaimRecord | None:
         return None  # reject — can't resolve source provenance
     return record
 
-record = create_record_tool(
-    fence,
+record = fence.record_tool(
     extra_fields=["search_file", "search_line"],
     enrich=resolve_source,
 )
@@ -465,8 +460,7 @@ When `enrich` returns `None`, the record is not persisted. The rejection is logg
 ### Lifecycle callbacks
 
 ```python
-record = create_record_tool(
-    fence,
+record = fence.record_tool(
     on_record=lambda r: print(f"Recorded #{r.id}: {r.finding} — {r.claim[:50]}"),
     on_reject=lambda tool, content, reason: log.warning(f"[{tool}] {reason}"),
 )
@@ -479,14 +473,14 @@ record = create_record_tool(
 In multi-stage pipelines, claims in later stages trace back to claims from earlier stages:
 
 ```python
-from audit_fence import FenceGroup, create_record_tool
+from audit_fence import FenceGroup
 
 group = FenceGroup()
 r1 = group.create("r1_fundamental")
 r2 = group.create("r2_specialist")
 
 # R1 records a claim
-rec_r1 = create_record_tool(r1, name="record_r1_claim", ...)
+rec_r1 = r1.record_tool(name="record_r1_claim", ...)
 search_r1("pe_ratio")
 r1_claim = rec_r1(claim="P/E of 18.9x", ...)
 
@@ -498,7 +492,7 @@ def link_to_r1(record):
         record.upstream_fence = "r1_fundamental"
     return record
 
-rec_r2 = create_record_tool(r2, name="record_r2_claim", enrich=link_to_r1, ...)
+rec_r2 = r2.record_tool(name="record_r2_claim", enrich=link_to_r1, ...)
 
 # Traverse the full chain
 chain = group.trace_chain(r2_claim)

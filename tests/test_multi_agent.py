@@ -4,7 +4,6 @@ import json
 import time
 
 from audit_fence import ClaimRecord, Fence, FenceGroup, SearchRecord, create_record_tool
-from audit_fence.workflow import reset_claim_ids
 
 
 # ============================================================================
@@ -830,7 +829,6 @@ def test_enforce_decorator_with_linked_fence():
 
 def test_group_all_claims():
     """all_claims should return claims from all fences sorted by timestamp."""
-    reset_claim_ids()
     group = FenceGroup()
     fence_a = group.create("a")
     fence_b = group.create("b")
@@ -843,8 +841,8 @@ def test_group_all_claims():
     def search_b(query: str) -> str:
         return "b found data in the search results with context"
 
-    rec_a = create_record_tool(fence_a, name="rec_a", require_claim_in_document=False)
-    rec_b = create_record_tool(fence_b, name="rec_b", require_claim_in_document=False)
+    rec_a = create_record_tool(fence_a, name="rec_a")
+    rec_b = create_record_tool(fence_b, name="rec_b")
 
     search_a("query")
     rec_a(claim="Claim A", claim_in_document="a", evidence="a found data in the search results with context")
@@ -871,7 +869,6 @@ def test_group_all_claims_empty():
 
 def _build_two_level_group():
     """Helper: build a group with R1 and R2a fences and linked claims."""
-    reset_claim_ids()
     group = FenceGroup()
     r1 = group.create("r1")
     r2a = group.create("r2a")
@@ -886,7 +883,7 @@ def _build_two_level_group():
 
     # R1 records a claim
     rec_r1 = create_record_tool(
-        r1, name="record_r1", require_claim_in_document=False,
+        r1, name="record_r1",
         extra_fields=["finding"],
     )
     search_r1("pe_ratio")
@@ -904,7 +901,7 @@ def _build_two_level_group():
         return record
 
     rec_r2a = create_record_tool(
-        r2a, name="record_r2a", require_claim_in_document=False,
+        r2a, name="record_r2a",
         enrich=link_to_r1,
     )
     search_r2a("P/E")
@@ -939,7 +936,6 @@ def test_trace_chain_root():
 
 def test_trace_chain_three_levels():
     """trace_chain should traverse multi-hop chains."""
-    reset_claim_ids()
     group = FenceGroup()
     source = group.create("source")
     mid = group.create("mid")
@@ -958,7 +954,7 @@ def test_trace_chain_three_levels():
         return "report text with final claim and evidence data"
 
     # Source claim
-    rec_s = create_record_tool(source, name="rec_s", require_claim_in_document=False)
+    rec_s = create_record_tool(source, name="rec_s")
     search_s("data")
     source_claim = rec_s(
         claim="Source fact",
@@ -968,7 +964,7 @@ def test_trace_chain_three_levels():
 
     # Mid claim → links to source
     rec_m = create_record_tool(
-        mid, name="rec_m", require_claim_in_document=False,
+        mid, name="rec_m",
         enrich=lambda r: _set_upstream(r, source_claim.id, "source"),
     )
     search_m("analysis")
@@ -980,7 +976,7 @@ def test_trace_chain_three_levels():
 
     # Final claim → links to mid
     rec_f = create_record_tool(
-        final, name="rec_f", require_claim_in_document=False,
+        final, name="rec_f",
         enrich=lambda r: _set_upstream(r, mid_claim.id, "mid"),
     )
     search_f("report")
@@ -1006,7 +1002,6 @@ def _set_upstream(record: ClaimRecord, uid: int, fence_name: str) -> ClaimRecord
 
 def test_trace_chain_missing_fence():
     """trace_chain should stop when upstream fence doesn't exist."""
-    reset_claim_ids()
     group = FenceGroup()
     f = group.create("only")
 
@@ -1025,7 +1020,6 @@ def test_trace_chain_missing_fence():
 
 def test_trace_chain_missing_claim_id():
     """trace_chain should stop when upstream claim ID doesn't exist."""
-    reset_claim_ids()
     group = FenceGroup()
     f = group.create("only")
 
@@ -1033,7 +1027,7 @@ def test_trace_chain_missing_claim_id():
     def search(q: str) -> str:
         return "some search results with evidence data here"
 
-    rec = create_record_tool(f, name="rec", require_claim_in_document=False)
+    rec = create_record_tool(f, name="rec")
     search("test")
     claim = rec(
         claim="lonely",
@@ -1050,12 +1044,11 @@ def test_trace_chain_missing_claim_id():
 
 def test_trace_chain_cycle_safe():
     """trace_chain should not loop if claims form a cycle."""
-    reset_claim_ids()
     group = FenceGroup()
     f = group.create("cycle")
 
-    c1 = ClaimRecord(claim="A", claim_in_document="a", evidence="e")
-    c2 = ClaimRecord(claim="B", claim_in_document="b", evidence="e")
+    c1 = ClaimRecord(claim="A", claim_in_document="a", evidence="e", id=1)
+    c2 = ClaimRecord(claim="B", claim_in_document="b", evidence="e", id=2)
     c1.upstream_id = c2.id
     c1.upstream_fence = "cycle"
     c2.upstream_id = c1.id

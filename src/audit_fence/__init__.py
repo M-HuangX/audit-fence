@@ -4,9 +4,8 @@ from .fence import (
     Fence,
     SearchRecord,
     ValidationResult,
-    extract_numbers,
-    normalize_number,
 )
+from .matching import extract_numbers, normalize_number
 from .group import FenceGroup
 from .prompts import PROMPTS
 from .agent import AuditResult
@@ -30,4 +29,4 @@ __all__ = [
     "extract_numbers",
     "normalize_number",
 ]
-__version__ = "0.7.0"
+__version__ = "0.8.0"

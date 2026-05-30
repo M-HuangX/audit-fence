@@ -12,7 +12,6 @@ from audit_fence import (
     SearchRecord,
     create_record_tool,
 )
-from audit_fence.workflow import reset_claim_ids
 
 
 # ============================================================================
@@ -22,7 +21,6 @@ from audit_fence.workflow import reset_claim_ids
 
 def test_claim_record_creation():
     """ClaimRecord should accept required fields and set defaults."""
-    reset_claim_ids()
     record = ClaimRecord(
         claim="Revenue was $5.1B",
         claim_in_document="Revenue of $5.1 billion in FY2025",
@@ -31,13 +29,12 @@ def test_claim_record_creation():
     assert record.claim == "Revenue was $5.1B"
     assert record.claim_in_document == "Revenue of $5.1 billion in FY2025"
     assert record.evidence == 'line 42: "revenue": 5098000000'
-    assert record.id == 1
+    assert record.id == 0
     assert record.timestamp > 0
 
 
 def test_claim_record_to_dict():
     """to_dict() should return a JSON-serializable dict."""
-    reset_claim_ids()
     record = ClaimRecord(
         claim="test claim",
         claim_in_document="test in doc",
@@ -59,7 +56,6 @@ def test_claim_record_to_dict():
 
 def test_claim_record_defaults():
     """Optional fields should have sensible defaults."""
-    reset_claim_ids()
     record = ClaimRecord(
         claim="c", claim_in_document="cid", evidence="e"
     )
@@ -75,11 +71,20 @@ def test_claim_record_defaults():
 
 
 def test_claim_record_auto_increment_id():
-    """ClaimRecord IDs should auto-increment."""
-    reset_claim_ids()
-    r1 = ClaimRecord(claim="a", claim_in_document="a", evidence="e")
-    r2 = ClaimRecord(claim="b", claim_in_document="b", evidence="e")
-    r3 = ClaimRecord(claim="c", claim_in_document="c", evidence="e")
+    """ClaimRecord IDs should auto-increment within a Fence."""
+    fence = Fence()
+
+    @fence.track
+    def search(q: str) -> str:
+        return f"result for {q} with padding text"
+
+    record_tool = create_record_tool(fence, extra_fields=["finding"])
+    search("test1")
+    r1 = record_tool(claim="a", claim_in_document="a", evidence="result for test1 with padding text")
+    search("test2")
+    r2 = record_tool(claim="b", claim_in_document="b", evidence="result for test2 with padding text")
+    search("test3")
+    r3 = record_tool(claim="c", claim_in_document="c", evidence="result for test3 with padding text")
     assert r1.id == 1
     assert r2.id == 2
     assert r3.id == 3
@@ -87,7 +92,6 @@ def test_claim_record_auto_increment_id():
 
 def test_claim_record_metadata():
     """metadata dict should be stored and serialized."""
-    reset_claim_ids()
     record = ClaimRecord(
         claim="c",
         claim_in_document="cid",
@@ -445,14 +449,13 @@ def test_search_record_backward_compat():
 
 def test_factory_basic():
     """create_record_tool should produce a working callable."""
-    reset_claim_ids()
     fence = Fence()
 
     @fence.track
     def search(query: str) -> str:
         return "line 42: revenue was $5.1B in FY2025 results data"
 
-    record = create_record_tool(fence, require_claim_in_document=False)
+    record = create_record_tool(fence)
     search("revenue")
 
     result = record(
@@ -467,10 +470,9 @@ def test_factory_basic():
 
 def test_factory_enforcement():
     """create_record_tool should enforce search requirement."""
-    reset_claim_ids()
     fence = Fence()
 
-    record = create_record_tool(fence, require_claim_in_document=False)
+    record = create_record_tool(fence)
 
     # No search performed → should fail
     result = record(
@@ -485,14 +487,12 @@ def test_factory_enforcement():
 
 def test_factory_skip_enforcement_dict():
     """Certain findings should bypass search requirement (dict form)."""
-    reset_claim_ids()
     fence = Fence()
 
     record = create_record_tool(
         fence,
         extra_fields=["finding"],
         skip_enforcement={"finding": ["not-found", "derived"]},
-        require_claim_in_document=False,
     )
 
     # No search, but finding="not-found" → should pass
@@ -509,7 +509,6 @@ def test_factory_skip_enforcement_dict():
 
 def test_factory_claim_in_document():
     """create_record_tool should enforce claim_in_document against document."""
-    reset_claim_ids()
     fence = Fence()
     fence.set_document("The company reported revenue of $5.1 billion.")
 
@@ -517,7 +516,7 @@ def test_factory_claim_in_document():
     def search(query: str) -> str:
         return "line 42: revenue was $5.1B in FY2025 detail output"
 
-    record = create_record_tool(fence, require_claim_in_document=True)
+    record = create_record_tool(fence)
     search("revenue")
 
     # Pass: claim text is in document
@@ -540,7 +539,6 @@ def test_factory_claim_in_document():
 
 def test_factory_jsonl_output(tmp_path):
     """Records should be written to JSONL file when output is set."""
-    reset_claim_ids()
     fence = Fence()
     output_file = str(tmp_path / "claims.jsonl")
     fence.set_output(output_file)
@@ -549,7 +547,7 @@ def test_factory_jsonl_output(tmp_path):
     def search(query: str) -> str:
         return "line 42: revenue was $5.1B in FY2025 long output"
 
-    record = create_record_tool(fence, require_claim_in_document=False)
+    record = create_record_tool(fence)
     search("revenue")
 
     record(
@@ -568,7 +566,6 @@ def test_factory_jsonl_output(tmp_path):
 
 def test_factory_extra_fields():
     """Extra fields should be accepted and stored in ClaimRecord."""
-    reset_claim_ids()
     fence = Fence()
 
     @fence.track
@@ -578,7 +575,6 @@ def test_factory_extra_fields():
     record = create_record_tool(
         fence,
         extra_fields=["source_tool", "raw_value", "finding"],
-        require_claim_in_document=False,
     )
     search("revenue")
 
@@ -603,7 +599,6 @@ def test_factory_extra_fields():
 
 def test_set_output_and_save(tmp_path):
     """Claims should be saveable to JSONL via save_claims()."""
-    reset_claim_ids()
     fence = Fence()
     output_file = str(tmp_path / "output.jsonl")
 
@@ -611,7 +606,7 @@ def test_set_output_and_save(tmp_path):
     def search(query: str) -> str:
         return "line 42: data found in the search results output"
 
-    record = create_record_tool(fence, require_claim_in_document=False)
+    record = create_record_tool(fence)
     search("data")
 
     record(
@@ -636,14 +631,13 @@ def test_set_output_and_save(tmp_path):
 
 def test_claims_property():
     """fence.claims should return list of ClaimRecords."""
-    reset_claim_ids()
     fence = Fence()
 
     @fence.track
     def search(query: str) -> str:
         return "line 42: data found in the search results output"
 
-    record = create_record_tool(fence, require_claim_in_document=False)
+    record = create_record_tool(fence)
     search("data")
 
     record(
@@ -668,7 +662,6 @@ def test_claims_property():
 
 def test_auto_append_jsonl(tmp_path):
     """Each successful record should auto-append to JSONL."""
-    reset_claim_ids()
     fence = Fence()
     output_file = str(tmp_path / "auto.jsonl")
     fence.set_output(output_file)
@@ -677,7 +670,7 @@ def test_auto_append_jsonl(tmp_path):
     def search(query: str) -> str:
         return "line 42: evidence data found in search results text"
 
-    record = create_record_tool(fence, require_claim_in_document=False)
+    record = create_record_tool(fence)
     search("data")
 
     # First record
@@ -719,7 +712,6 @@ def test_save_claims_no_path_raises():
 
 def test_full_audit_workflow(tmp_path):
     """End-to-end: set_document, track search, enforce record, check claims."""
-    reset_claim_ids()
     fence = Fence(name="source_auditor")
     output_file = str(tmp_path / "audit.jsonl")
     fence.set_document(
@@ -793,7 +785,6 @@ def test_full_audit_workflow(tmp_path):
 
 def test_multi_fence_workflow():
     """Two fences with different sandboxes should work independently."""
-    reset_claim_ids()
 
     # Fence A: restricted to specialist outputs
     fence_a = Fence(name="specialist_evidence")
@@ -838,16 +829,14 @@ def test_multi_fence_workflow():
     assert "ERROR" in result_b_blocked
 
 
-def test_factory_no_search_required():
-    """require_search=False should skip search enforcement entirely."""
-    reset_claim_ids()
+def test_skip_enforcement_always():
+    """skip_enforcement=lambda _: True should skip search enforcement entirely."""
     fence = Fence()
     # No searches registered, no document set
 
     record = create_record_tool(
         fence,
-        require_search=False,
-        require_claim_in_document=False,
+        skip_enforcement=lambda _: True,
     )
 
     result = record(
@@ -861,14 +850,13 @@ def test_factory_no_search_required():
 
 def test_reset_clears_claims():
     """fence.reset() should clear recorded claims."""
-    reset_claim_ids()
     fence = Fence()
 
     @fence.track
     def search(query: str) -> str:
         return "line 42: evidence data in the search results"
 
-    record = create_record_tool(fence, require_claim_in_document=False)
+    record = create_record_tool(fence)
     search("test")
     record(
         claim="test",
@@ -888,14 +876,12 @@ def test_reset_clears_claims():
 
 def test_skip_enforcement_by_source_type():
     """Dict form: skip based on source_type (not finding)."""
-    reset_claim_ids()
     fence = Fence()
 
     record = create_record_tool(
         fence,
         extra_fields=["source_type"],
         skip_enforcement={"source_type": ["kb", "web", "derived"]},
-        require_claim_in_document=False,
     )
 
     # No search, source_type="kb" → should pass (skipped)
@@ -921,13 +907,11 @@ def test_skip_enforcement_by_source_type():
 
 def test_skip_enforcement_callable():
     """Callable form: skip when custom predicate returns True."""
-    reset_claim_ids()
     fence = Fence()
 
     record = create_record_tool(
         fence,
         skip_enforcement=lambda kw: kw.get("confidence", 0) > 0.9,
-        require_claim_in_document=False,
     )
 
     # No search, confidence=0.95 → should pass (skipped)
@@ -954,7 +938,6 @@ def test_skip_enforcement_callable():
 
 def test_skip_enforcement_multi_field_dict():
     """Dict with multiple fields: skip if ANY field matches."""
-    reset_claim_ids()
     fence = Fence()
 
     record = create_record_tool(
@@ -964,7 +947,6 @@ def test_skip_enforcement_multi_field_dict():
             "finding": ["not-found"],
             "source_type": ["kb", "web"],
         },
-        require_claim_in_document=False,
     )
 
     # No search, finding="not-found" → skip (first field matches)
@@ -1001,7 +983,6 @@ def test_skip_enforcement_multi_field_dict():
 
 def test_skip_enforcement_still_checks_document():
     """Even when search is skipped, claim_in_document should still be checked."""
-    reset_claim_ids()
     fence = Fence()
     fence.set_document("Revenue was $5.1B in FY2025.")
 
@@ -1009,7 +990,6 @@ def test_skip_enforcement_still_checks_document():
         fence,
         extra_fields=["finding"],
         skip_enforcement={"finding": ["not-found"]},
-        require_claim_in_document=True,
     )
 
     # Search skipped (not-found), but claim_in_document is wrong → fail
@@ -1030,7 +1010,6 @@ def test_skip_enforcement_still_checks_document():
 
 def test_enrich_basic():
     """enrich callback should modify ClaimRecord before persistence."""
-    reset_claim_ids()
     fence = Fence()
 
     def add_source(record: ClaimRecord) -> ClaimRecord:
@@ -1045,7 +1024,6 @@ def test_enrich_basic():
     record = create_record_tool(
         fence,
         enrich=add_source,
-        require_claim_in_document=False,
     )
     search("test")
 
@@ -1063,7 +1041,6 @@ def test_enrich_basic():
 
 def test_enrich_sets_upstream(tmp_path):
     """enrich callback can set upstream_id/upstream_fence for chaining."""
-    reset_claim_ids()
     fence = Fence()
     output_file = str(tmp_path / "enriched.jsonl")
     fence.set_output(output_file)
@@ -1080,7 +1057,6 @@ def test_enrich_sets_upstream(tmp_path):
     record = create_record_tool(
         fence,
         enrich=link_upstream,
-        require_claim_in_document=False,
     )
     search("test")
 
@@ -1102,16 +1078,13 @@ def test_enrich_sets_upstream(tmp_path):
 
 def test_enrich_none_is_noop():
     """enrich=None should not affect record creation."""
-    reset_claim_ids()
     fence = Fence()
 
     @fence.track
     def search(query: str) -> str:
         return "line 10: data found in search results output"
 
-    record = create_record_tool(
-        fence, enrich=None, require_claim_in_document=False
-    )
+    record = create_record_tool(fence, enrich=None)
     search("test")
 
     result = record(
@@ -1130,7 +1103,6 @@ def test_enrich_none_is_noop():
 
 def test_claim_record_upstream_defaults():
     """upstream_id and upstream_fence should default to no-link."""
-    reset_claim_ids()
     record = ClaimRecord(claim="c", claim_in_document="cid", evidence="e")
     assert record.upstream_id == -1
     assert record.upstream_fence == ""
@@ -1138,7 +1110,6 @@ def test_claim_record_upstream_defaults():
 
 def test_claim_record_upstream_serialization():
     """Upstream fields should survive to_dict() and JSON roundtrip."""
-    reset_claim_ids()
     record = ClaimRecord(
         claim="c",
         claim_in_document="cid",
@@ -1162,7 +1133,6 @@ def test_claim_record_upstream_serialization():
 
 def test_extra_fields_metadata_routing():
     """Unknown extra_fields should be routed to metadata dict."""
-    reset_claim_ids()
     fence = Fence()
 
     @fence.track
@@ -1172,7 +1142,6 @@ def test_extra_fields_metadata_routing():
     record = create_record_tool(
         fence,
         extra_fields=["finding", "grep_file", "grep_line", "output_line"],
-        require_claim_in_document=False,
     )
     search("revenue")
 
@@ -1196,7 +1165,6 @@ def test_extra_fields_metadata_routing():
 
 def test_extra_fields_metadata_serialization(tmp_path):
     """Metadata-routed fields should survive JSONL roundtrip."""
-    reset_claim_ids()
     fence = Fence()
     output_file = str(tmp_path / "meta.jsonl")
     fence.set_output(output_file)
@@ -1208,7 +1176,6 @@ def test_extra_fields_metadata_serialization(tmp_path):
     record = create_record_tool(
         fence,
         extra_fields=["finding", "custom_score"],
-        require_claim_in_document=False,
     )
     search("test")
 
@@ -1228,7 +1195,6 @@ def test_extra_fields_metadata_serialization(tmp_path):
 
 def test_extra_fields_mixed_known_unknown():
     """Mix of known ClaimRecord fields and unknown fields should both work."""
-    reset_claim_ids()
     fence = Fence()
 
     @fence.track
@@ -1244,7 +1210,6 @@ def test_extra_fields_mixed_known_unknown():
             "specialist_agent",  # unknown → metadata
             "confidence",        # unknown → metadata
         ],
-        require_claim_in_document=False,
     )
     search("test")
 
@@ -1270,7 +1235,6 @@ def test_extra_fields_mixed_known_unknown():
 
 def test_extra_fields_no_unknown_no_metadata():
     """When all extra_fields are known, metadata should stay empty."""
-    reset_claim_ids()
     fence = Fence()
 
     @fence.track
@@ -1280,7 +1244,6 @@ def test_extra_fields_no_unknown_no_metadata():
     record = create_record_tool(
         fence,
         extra_fields=["finding", "source_tool"],
-        require_claim_in_document=False,
     )
     search("test")
 
@@ -1302,7 +1265,6 @@ def test_extra_fields_no_unknown_no_metadata():
 
 def test_on_record_callback():
     """on_record should fire after successful record creation."""
-    reset_claim_ids()
     fence = Fence()
     recorded = []
 
@@ -1313,7 +1275,6 @@ def test_on_record_callback():
     record = create_record_tool(
         fence,
         on_record=lambda r: recorded.append(r),
-        require_claim_in_document=False,
     )
     search("test")
 
@@ -1330,7 +1291,6 @@ def test_on_record_callback():
 
 def test_on_record_not_called_on_rejection():
     """on_record should NOT fire when a record is rejected."""
-    reset_claim_ids()
     fence = Fence()
     recorded = []
 
@@ -1338,7 +1298,6 @@ def test_on_record_not_called_on_rejection():
     record = create_record_tool(
         fence,
         on_record=lambda r: recorded.append(r),
-        require_claim_in_document=False,
     )
 
     result = record(
@@ -1353,7 +1312,6 @@ def test_on_record_not_called_on_rejection():
 
 def test_on_reject_enforcement_failure():
     """on_reject should fire when search enforcement fails."""
-    reset_claim_ids()
     fence = Fence()
     rejections = []
 
@@ -1362,7 +1320,6 @@ def test_on_reject_enforcement_failure():
         on_reject=lambda tool, content, reason: rejections.append(
             {"tool": tool, "reason": reason}
         ),
-        require_claim_in_document=False,
     )
 
     # No search → enforcement failure
@@ -1380,7 +1337,6 @@ def test_on_reject_enforcement_failure():
 
 def test_on_reject_document_mismatch():
     """on_reject should fire when claim_in_document doesn't match."""
-    reset_claim_ids()
     fence = Fence()
     fence.set_document("The company reported revenue of $5.1 billion.")
     rejections = []
@@ -1394,7 +1350,6 @@ def test_on_reject_document_mismatch():
         on_reject=lambda tool, content, reason: rejections.append(
             {"tool": tool, "reason": reason}
         ),
-        require_claim_in_document=True,
     )
     search("revenue")
 
@@ -1411,7 +1366,6 @@ def test_on_reject_document_mismatch():
 
 def test_on_reject_custom_name():
     """on_reject should include the custom tool name."""
-    reset_claim_ids()
     fence = Fence()
     rejections = []
 
@@ -1419,7 +1373,6 @@ def test_on_reject_custom_name():
         fence,
         name="record_specialist_claim",
         on_reject=lambda tool, content, reason: rejections.append(tool),
-        require_claim_in_document=False,
     )
 
     record(
@@ -1433,7 +1386,6 @@ def test_on_reject_custom_name():
 
 def test_on_record_and_on_reject_together():
     """Both callbacks should work independently in the same tool."""
-    reset_claim_ids()
     fence = Fence()
     recorded = []
     rejections = []
@@ -1446,7 +1398,6 @@ def test_on_record_and_on_reject_together():
         fence,
         on_record=lambda r: recorded.append(r.claim),
         on_reject=lambda t, c, r: rejections.append(r),
-        require_claim_in_document=False,
     )
 
     # First: success
@@ -1476,7 +1427,6 @@ def test_on_record_and_on_reject_together():
 
 def test_enrich_reject_returns_error():
     """enrich returning None should reject the record."""
-    reset_claim_ids()
     fence = Fence()
 
     def reject_all(record: ClaimRecord) -> ClaimRecord | None:
@@ -1489,7 +1439,6 @@ def test_enrich_reject_returns_error():
     record = create_record_tool(
         fence,
         enrich=reject_all,
-        require_claim_in_document=False,
     )
     search("test")
 
@@ -1507,7 +1456,6 @@ def test_enrich_reject_returns_error():
 
 def test_enrich_reject_triggers_on_reject():
     """Enrich rejection should trigger the on_reject callback."""
-    reset_claim_ids()
     fence = Fence()
     rejections = []
 
@@ -1524,7 +1472,6 @@ def test_enrich_reject_triggers_on_reject():
         fence,
         enrich=reject_if_no_tool,
         on_reject=lambda tool, content, reason: rejections.append(reason),
-        require_claim_in_document=False,
     )
     search("test")
 
@@ -1541,7 +1488,6 @@ def test_enrich_reject_triggers_on_reject():
 
 def test_enrich_reject_logged_in_fence():
     """Enrich rejection should be logged in fence rejections."""
-    reset_claim_ids()
     fence = Fence()
 
     def reject_all(record: ClaimRecord) -> ClaimRecord | None:
@@ -1554,7 +1500,6 @@ def test_enrich_reject_logged_in_fence():
     record = create_record_tool(
         fence,
         enrich=reject_all,
-        require_claim_in_document=False,
     )
     search("test")
 
@@ -1572,7 +1517,6 @@ def test_enrich_reject_logged_in_fence():
 
 def test_enrich_reject_not_persisted(tmp_path):
     """Enrich-rejected records should NOT be written to JSONL."""
-    reset_claim_ids()
     fence = Fence()
     output_file = str(tmp_path / "enrich_reject.jsonl")
     fence.set_output(output_file)
@@ -1592,7 +1536,6 @@ def test_enrich_reject_not_persisted(tmp_path):
     record = create_record_tool(
         fence,
         enrich=reject_second,
-        require_claim_in_document=False,
     )
     search("test")
 
@@ -1754,7 +1697,6 @@ def test_ripgrep_backend_with_fence_track(tmp_path):
     """RipgrepBackend should work with fence.wrap_tool() for history tracking."""
     from audit_fence import RipgrepBackend, FenceGroup
 
-    reset_claim_ids()
     tools_dir = tmp_path / "tools"
     tools_dir.mkdir()
     (tools_dir / "data.json").write_text(

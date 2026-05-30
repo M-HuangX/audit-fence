@@ -424,6 +424,7 @@ class TestAgentWriter:
         assert stats["errors"] == 1
         assert stats["artifacts"] == ["report.md"]
         assert stats["trace_dir"] == "test_agent/"
+        assert stats["trace_bytes"] > 0
 
 
 # ---------------------------------------------------------------------------
@@ -532,6 +533,25 @@ class TestSnapshot:
         assert "Snapshot(" in r
         assert "abc" in r
         assert "research" in r
+
+
+    def test_get_writer_concurrent(self, tmp_path):
+        """Multiple threads requesting the same agent get the same writer."""
+        snap = Snapshot(str(tmp_path / "trace"))
+        writers: list = []
+
+        def get():
+            writers.append(snap._get_writer("agent_x"))
+
+        threads = [threading.Thread(target=get) for _ in range(20)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # All 20 threads should get the exact same writer instance.
+        assert len(writers) == 20
+        assert all(w is writers[0] for w in writers)
 
 
 # ---------------------------------------------------------------------------

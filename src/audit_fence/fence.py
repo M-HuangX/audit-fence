@@ -4,13 +4,23 @@ from __future__ import annotations
 
 import fnmatch
 import inspect
+import itertools
 import json
-import re
 import time
 from dataclasses import dataclass, field
 from functools import wraps
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    from .workflow import ClaimRecord
+
+from .matching import (
+    _extract_quotes,
+    _normalize,
+    _number_match,
+    _verify_source_match,
+)
 
 
 @dataclass
@@ -116,8 +126,9 @@ class Fence:
         # Workflow layer attributes
         self._document: str | Callable[[], str] | None = None
         self._output_path: str | None = None
-        self._claims: list = []  # list[ClaimRecord] (avoid circular import)
+        self._claims: list[ClaimRecord] = []
         self._search_fn: Callable | None = None  # set by set_source()
+        self._next_claim_id: Callable[[], int] = itertools.count(1).__next__
 
     # -- Public properties ---------------------------------------------------
 
@@ -221,6 +232,20 @@ class Fence:
         """
         from .agent import run_audit
         return await run_audit(self, llm, **kwargs)
+
+    def record_tool(self, **kwargs: Any) -> Callable:
+        """Create an enforcement-checked record tool bound to this fence.
+
+        Convenience method equivalent to
+        ``create_record_tool(fence, ...)``.  See
+        :func:`~audit_fence.workflow.create_record_tool` for full
+        parameter documentation.
+
+        Returns:
+            A callable record tool with fence enforcement.
+        """
+        from .workflow import create_record_tool
+        return create_record_tool(self, **kwargs)
 
     def set_output(self, path: str) -> None:
         """Set the JSONL output file path for claim persistence.
@@ -341,41 +366,7 @@ class Fence:
 
         Works with both sync and async functions.
         """
-
-        def _record_result(result: Any, args: tuple, kwargs: dict) -> None:
-            """Shared logic: append search result to history."""
-            parts = [str(a) for a in args]
-            parts.extend(f"{k}={v}" for k, v in kwargs.items())
-            self._history.append(
-                SearchRecord(
-                    query=" ".join(parts) if parts else "(no args)",
-                    result_text=str(result),
-                    source=self._name or "",
-                )
-            )
-            self._trim_history()
-
-        if inspect.iscoroutinefunction(fn):
-
-            @wraps(fn)
-            async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
-                result = await fn(*args, **kwargs)
-                _record_result(result, args, kwargs)
-                return result
-
-            async_wrapper._fence_role = "search"  # type: ignore[attr-defined]
-            self._search_fns.append(async_wrapper)
-            return async_wrapper
-
-        @wraps(fn)
-        def wrapper(*args: Any, **kwargs: Any) -> Any:
-            result = fn(*args, **kwargs)
-            _record_result(result, args, kwargs)
-            return result
-
-        wrapper._fence_role = "search"  # type: ignore[attr-defined]
-        self._search_fns.append(wrapper)
-        return wrapper
+        return self._wrap_as_search(fn)
 
     def enforce(
         self,
@@ -410,98 +401,16 @@ class Fence:
         The optional ``context`` dict is merged with the fence-level context
         and attached to every rejection from this tool.
         """
-        per_tool_context = context
 
         def decorator(func: Callable) -> Callable:
-
-            def _validate(args: tuple, kwargs: dict) -> str | None:
-                """Shared validation logic. Returns error string or None."""
-                evidence = _resolve_param(func, evidence_param, args, kwargs)
-
-                # Check 1: search history must not be empty
-                # (checks own history + upstream via _collect_history)
-                if not self._collect_history():
-                    err = (
-                        "No search calls recorded. You must call a search "
-                        "tool first to find evidence before submitting."
-                    )
-                    self._log_rejection(
-                        func.__name__, evidence, err, per_tool_context
-                    )
-                    return f"ERROR: {err}"
-
-                # Check 2: minimum evidence length
-                eff_min = (
-                    min_length
-                    if min_length is not None
-                    else self._min_evidence_length
-                )
-                if len(evidence.strip()) < eff_min:
-                    err = (
-                        f"Evidence too short (got {len(evidence.strip())} chars, "
-                        f"min {eff_min}). Paste actual search output."
-                    )
-                    self._log_rejection(
-                        func.__name__, evidence, err, per_tool_context
-                    )
-                    return f"ERROR: {err}"
-
-                # Check 3: evidence must match a recent search result
-                ok, err = self._verify_search_match(evidence)
-                if not ok:
-                    self._log_rejection(
-                        func.__name__, evidence, err, per_tool_context
-                    )
-                    return f"ERROR: {err}"
-
-                # Check 4 (optional): claim must exist in source text
-                if claim_param is not None and source_text is not None:
-                    claim = _resolve_param(func, claim_param, args, kwargs)
-                    if claim:
-                        src = (
-                            source_text() if callable(source_text) else source_text
-                        )
-                        ok, err = _verify_source_match(claim, src)
-                        if not ok:
-                            self._log_rejection(
-                                func.__name__, claim, err, per_tool_context
-                            )
-                            return f"ERROR: {err}"
-
-                # Check 5 (auto): claim_in_document vs fence document
-                cid = _resolve_param(
-                    func, "claim_in_document", args, kwargs
-                )
-                if cid:
-                    doc_err = self._check_claim_in_document(cid)
-                    if doc_err is not None:
-                        return doc_err
-
-                return None  # All checks passed
-
-            if inspect.iscoroutinefunction(func):
-
-                @wraps(func)
-                async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
-                    error = _validate(args, kwargs)
-                    if error is not None:
-                        return error
-                    return await func(*args, **kwargs)
-
-                async_wrapper._fence_role = "submit"  # type: ignore[attr-defined]
-                self._submit_fns.append(async_wrapper)
-                return async_wrapper
-
-            @wraps(func)
-            def wrapper(*args: Any, **kwargs: Any) -> Any:
-                error = _validate(args, kwargs)
-                if error is not None:
-                    return error
-                return func(*args, **kwargs)
-
-            wrapper._fence_role = "submit"  # type: ignore[attr-defined]
-            self._submit_fns.append(wrapper)
-            return wrapper
+            return self._wrap_as_submit(
+                func,
+                evidence_param,
+                claim_param=claim_param,
+                source_text=source_text,
+                min_length=min_length,
+                context=context,
+            )
 
         # Support both @fence.enforce and @fence.enforce(...)
         if fn is not None:
@@ -859,6 +768,7 @@ class Fence:
 
     def _wrap_as_search(self, fn: Callable) -> Callable:
         """Wrap *fn* with search-tracking behaviour."""
+        tool_name = _get_tool_name(fn)
 
         def _record(result: Any, args: tuple, kwargs: dict) -> None:
             parts = [str(a) for a in args]
@@ -868,6 +778,7 @@ class Fence:
                     query=" ".join(parts) if parts else "(no args)",
                     result_text=str(result),
                     source=self._name or "",
+                    tool_name=tool_name,
                 )
             )
             self._trim_history()
@@ -894,8 +805,23 @@ class Fence:
         self._search_fns.append(wrapper)
         return wrapper
 
-    def _wrap_as_submit(self, fn: Callable, evidence_param: str) -> Callable:
-        """Wrap *fn* with enforcement behaviour."""
+    def _wrap_as_submit(
+        self,
+        fn: Callable,
+        evidence_param: str = "evidence",
+        *,
+        claim_param: str | None = None,
+        source_text: str | Callable[[], str] | None = None,
+        min_length: int | None = None,
+        context: dict | None = None,
+    ) -> Callable:
+        """Wrap *fn* with enforcement behaviour.
+
+        Used internally by both :meth:`enforce` (decorator API) and
+        :meth:`wrap_tool` / :meth:`wrap_tools` (programmatic API).
+        The extra keyword arguments (*claim_param*, *source_text*,
+        *min_length*, *context*) are only used by :meth:`enforce`.
+        """
         tool_name = _get_tool_name(fn)
 
         def _validate(args: tuple, kwargs: dict) -> str | None:
@@ -906,23 +832,40 @@ class Fence:
                     "No search calls recorded. You must call a search "
                     "tool first to find evidence before submitting."
                 )
-                self._log_rejection(tool_name, evidence, err)
+                self._log_rejection(tool_name, evidence, err, context)
                 return f"ERROR: {err}"
 
-            if len(evidence.strip()) < self._min_evidence_length:
+            eff_min = (
+                min_length
+                if min_length is not None
+                else self._min_evidence_length
+            )
+            if len(evidence.strip()) < eff_min:
                 err = (
                     f"Evidence too short (got {len(evidence.strip())} chars, "
-                    f"min {self._min_evidence_length}). Paste actual search output."
+                    f"min {eff_min}). Paste actual search output."
                 )
-                self._log_rejection(tool_name, evidence, err)
+                self._log_rejection(tool_name, evidence, err, context)
                 return f"ERROR: {err}"
 
             ok, err = self._verify_search_match(evidence)
             if not ok:
-                self._log_rejection(tool_name, evidence, err)
+                self._log_rejection(tool_name, evidence, err, context)
                 return f"ERROR: {err}"
 
-            # claim_in_document enforcement (auto)
+            # Optional: claim must exist in source text
+            if claim_param is not None and source_text is not None:
+                claim = _resolve_param(fn, claim_param, args, kwargs)
+                if claim:
+                    src = (
+                        source_text() if callable(source_text) else source_text
+                    )
+                    ok, err = _verify_source_match(claim, src)
+                    if not ok:
+                        self._log_rejection(tool_name, claim, err, context)
+                        return f"ERROR: {err}"
+
+            # Auto: claim_in_document vs fence document
             cid = _resolve_param(fn, "claim_in_document", args, kwargs)
             if cid:
                 doc_err = self._check_claim_in_document(cid)
@@ -1004,174 +947,3 @@ def _matches_spec(
             if fnmatch.fnmatch(name, spec):
                 return True
     return False
-
-
-# Regex to extract quoted passages: "..." or '...' (at least 10 chars inside)
-_QUOTE_PATTERN = re.compile(r'["\u201c]([^"\u201d]{10,})["\u201d]')
-
-
-def _extract_quotes(text: str) -> list[str]:
-    """Extract quoted passages from text for validation.
-
-    Looks for double-quoted strings (ASCII ``"`` or Unicode curly quotes)
-    that are at least 10 characters long.
-    """
-    return [m.group(1) for m in _QUOTE_PATTERN.finditer(text)]
-
-
-def _verify_source_match(claim: str, source_text: str) -> tuple[bool, str]:
-    """Verify that claim text exists as a substring in the source document."""
-    if not claim or not source_text:
-        return True, ""
-
-    norm_claim = _normalize(claim)
-    norm_source = _normalize(source_text)
-
-    if norm_claim in norm_source:
-        return True, ""
-
-    return False, (
-        "Claim text not found in the source document. "
-        "Copy the EXACT text from the source."
-    )
-
-
-def _normalize(text: str) -> str:
-    """Normalize text for substring comparison: strip markdown, collapse whitespace, lowercase."""
-    text = re.sub(r"\*\*|__|\*|_|`|~~", "", text)  # bold, italic, code, strikethrough
-    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)  # [text](url) → text
-    text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)  # heading markers
-    text = re.sub(r"\|", " ", text)  # table pipes
-    text = re.sub(r"[—–]", "-", text)  # em/en dashes → hyphen
-    text = re.sub(r"\s+", " ", text)
-    return text.strip().lower()
-
-
-# -- Number format matching --------------------------------------------------
-
-# Pattern: optional sign, digits with optional commas, optional decimal, optional suffix
-_NUM_PATTERN = re.compile(
-    r"[-+]?"
-    r"\d[\d,]*"           # integer part (may have commas)
-    r"(?:\.\d+)?"         # optional decimal
-    r"[%KMBTkmbt]?"        # optional suffix (must be adjacent, no whitespace)
-)
-
-_SUFFIX_MULTIPLIERS: dict[str, float] = {
-    "k": 1e3,
-    "m": 1e6,
-    "b": 1e9,
-    "t": 1e12,
-}
-
-
-def normalize_number(text: str) -> float | None:
-    """Parse a human-readable number string into a float.
-
-    Handles:
-    - Comma-separated numbers: ``"5,098,000,000"`` -> ``5098000000.0``
-    - Suffix abbreviations: ``"5.1B"`` -> ``5100000000.0``
-    - Percentages: ``"26.2%"`` -> ``0.262``
-    - Plain numbers: ``"18.923"`` -> ``18.923``
-
-    Returns ``None`` if the string does not look like a number.
-    """
-    text = text.strip()
-    if not text:
-        return None
-
-    # Remove leading currency signs
-    text = text.lstrip("$")
-
-    # Check for percentage
-    is_pct = text.endswith("%")
-    if is_pct:
-        text = text[:-1].strip()
-
-    # Remove commas
-    text = text.replace(",", "")
-
-    # Extract suffix
-    suffix = ""
-    if text and text[-1].lower() in _SUFFIX_MULTIPLIERS:
-        suffix = text[-1].lower()
-        text = text[:-1].strip()
-
-    try:
-        value = float(text)
-    except (ValueError, TypeError):
-        return None
-
-    if suffix:
-        value *= _SUFFIX_MULTIPLIERS[suffix]
-    if is_pct:
-        value /= 100.0
-
-    return value
-
-
-def extract_numbers(text: str) -> list[float]:
-    """Extract all numeric values from a text string.
-
-    Finds numbers with optional K/M/B/T suffixes, commas, and percentage
-    signs, then normalizes each to a float.
-
-    Example::
-
-        >>> extract_numbers("Revenue $5.1B, up 26.2% YoY")
-        [5100000000.0, 0.262]
-    """
-    results: list[float] = []
-    for match in _NUM_PATTERN.finditer(text):
-        token = match.group()
-        val = normalize_number(token)
-        if val is not None:
-            results.append(val)
-    return results
-
-
-def _numbers_overlap(nums_a: list[float], nums_b: list[float]) -> bool:
-    """Check if any number from list A matches any number from list B.
-
-    Two numbers match if they are within 0.1% relative tolerance of each
-    other, handling float imprecision from suffix expansion.
-    """
-    for a in nums_a:
-        for b in nums_b:
-            if a == 0 and b == 0:
-                return True
-            if a == 0 or b == 0:
-                continue
-            rel = abs(a - b) / max(abs(a), abs(b))
-            if rel < 0.001:
-                return True
-    return False
-
-
-def _number_match(evidence_line: str, search_text: str) -> bool:
-    """Fallback matching: check if a line's numbers match numbers in search results.
-
-    Only activates when the evidence line contains at least one number.
-    Requires at least one number overlap AND some non-numeric text overlap
-    (at least 3 words in common) to prevent pure-number false positives.
-    """
-    ev_nums = extract_numbers(evidence_line)
-    if not ev_nums:
-        return False
-
-    sr_nums = extract_numbers(search_text)
-    if not sr_nums:
-        return False
-
-    if not _numbers_overlap(ev_nums, sr_nums):
-        return False
-
-    # Require some non-numeric textual overlap to prevent false positives
-    ev_words = set(re.sub(r"[^a-zA-Z\s]", "", evidence_line.lower()).split())
-    sr_words = set(re.sub(r"[^a-zA-Z\s]", "", search_text.lower()).split())
-    # Remove very common words
-    stopwords = {"the", "a", "an", "in", "of", "to", "and", "or", "is", "was", "for", "on", "at", "by", "with", "from"}
-    ev_words -= stopwords
-    sr_words -= stopwords
-    common = ev_words & sr_words
-    return len(common) >= 2

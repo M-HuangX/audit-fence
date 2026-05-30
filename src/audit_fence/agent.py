@@ -151,6 +151,7 @@ async def run_audit(
         max_rounds: Maximum agent reasoning rounds (default 200).
         extra_fields: Extra ClaimRecord fields the agent can fill.
         prompt_template: Override the default VERIFY_CLAIMS prompt.
+            Must contain ``{document}`` and ``{data_source}`` placeholders.
         manifest: Optional manifest dict (from ``Snapshot.load_manifest()``).
             When provided, a formatted summary of available trace data is
             appended to the system prompt, giving the audit agent guided

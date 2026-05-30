@@ -11,23 +11,6 @@ from typing import TYPE_CHECKING, Any, Callable
 if TYPE_CHECKING:
     from .fence import Fence
 
-# Global auto-increment counter for ClaimRecord IDs
-_claim_id_counter = 0
-
-
-def _next_claim_id() -> int:
-    """Return the next auto-incrementing claim ID."""
-    global _claim_id_counter
-    _claim_id_counter += 1
-    return _claim_id_counter
-
-
-def reset_claim_ids() -> None:
-    """Reset the global claim ID counter (useful for tests)."""
-    global _claim_id_counter
-    _claim_id_counter = 0
-
-
 @dataclass
 class ClaimRecord:
     """A recorded audit claim linking a document statement to source evidence.
@@ -84,8 +67,10 @@ class ClaimRecord:
     upstream_fence: str = ""
     """Name of the fence that holds the upstream claim."""
 
-    id: int = field(default_factory=_next_claim_id)
-    """Auto-incrementing claim ID."""
+    id: int = 0
+    """Claim ID.  Assigned by :meth:`Fence._next_claim_id` when created
+    via ``create_record_tool`` / ``fence.record_tool()``.  Default 0
+    for standalone construction."""
 
     timestamp: float = field(default_factory=time.time)
     """Creation timestamp."""
@@ -103,8 +88,6 @@ def create_record_tool(
     name: str = "record_claim",
     doc: str = "Record an audited claim with evidence.",
     extra_fields: list[str] | None = None,
-    require_search: bool = True,
-    require_claim_in_document: bool = True,
     skip_enforcement: dict[str, Any] | Callable[[dict], bool] | None = None,
     enrich: Callable[[ClaimRecord], ClaimRecord | None] | None = None,
     on_record: Callable[[ClaimRecord], None] | None = None,
@@ -128,10 +111,6 @@ def create_record_tool(
             Unrecognized fields are stored in the record's ``metadata``
             dict, so domain-specific data is preserved without schema
             changes.
-        require_search: If True (default), evidence must match search
-            history (standard fence enforcement).
-        require_claim_in_document: If True (default), claim_in_document
-            must be found in the fence's document (if set).
         skip_enforcement: Conditions under which search enforcement is
             skipped.  Two forms are accepted:
 
@@ -196,8 +175,6 @@ def create_record_tool(
                     return True
             return False
 
-    # Build the base function signature dynamically
-    # Core params are always present; extras are optional kwargs
     def _make_record(
         claim: str,
         claim_in_document: str,
@@ -219,10 +196,10 @@ def create_record_tool(
         if extra_metadata:
             existing = record_kwargs.get("metadata", {})
             record_kwargs["metadata"] = {**existing, **extra_metadata}
+        record_kwargs["id"] = fence._next_claim_id()
         record = ClaimRecord(**record_kwargs)
 
-        # Enrichment hook: resolve source, link upstream, etc.
-        # Returning None signals rejection.
+        # Enrichment hook
         if _enrich is not None:
             record = _enrich(record)
             if record is None:
@@ -232,14 +209,11 @@ def create_record_tool(
                     _on_reject(name, evidence, err)
                 return f"ERROR: {err}"
 
-        # Append to fence claims list
         fence._claims.append(record)
 
-        # Auto-append to JSONL if output path is set
         if fence._output_path is not None:
             _append_jsonl(fence._output_path, record)
 
-        # Lifecycle callback
         if _on_record is not None:
             _on_record(record)
 
@@ -249,38 +223,6 @@ def create_record_tool(
     _make_record.__qualname__ = name
     _make_record.__doc__ = doc
 
-    if not require_search and skip_enforcement is None:
-        # No enforcement needed at all -- just track as submit
-        @wraps(_make_record)
-        def unguarded(
-            claim: str = "",
-            claim_in_document: str = "",
-            evidence: str = "",
-            **kwargs: Any,
-        ) -> Any:
-            # Still do claim_in_document check if required
-            if require_claim_in_document and claim_in_document:
-                err = fence._check_claim_in_document(claim_in_document)
-                if err is not None:
-                    if _on_reject is not None:
-                        _on_reject(name, claim_in_document, err)
-                    return err
-
-            return _make_record(
-                claim=claim,
-                claim_in_document=claim_in_document,
-                evidence=evidence,
-                **kwargs,
-            )
-
-        unguarded.__name__ = name
-        unguarded.__qualname__ = name
-        unguarded.__doc__ = doc
-        unguarded._fence_role = "submit"  # type: ignore[attr-defined]
-        fence._submit_fns.append(unguarded)
-        return unguarded
-
-    # With enforcement: wrapper that conditionally skips via _should_skip
     @wraps(_make_record)
     def guarded(
         claim: str = "",
@@ -288,17 +230,16 @@ def create_record_tool(
         evidence: str = "",
         **kwargs: Any,
     ) -> Any:
-        # Check claim_in_document if required
-        if require_claim_in_document and claim_in_document:
+        # Auto-detect: check claim_in_document if document is set
+        if claim_in_document:
             err = fence._check_claim_in_document(claim_in_document)
             if err is not None:
                 if _on_reject is not None:
                     _on_reject(name, claim_in_document, err)
                 return err
 
-        # Skip search enforcement when the predicate says so
-        if require_search and not _should_skip(kwargs):
-            # Check 1: search history must exist
+        # Search enforcement (skippable via skip_enforcement predicate)
+        if not _should_skip(kwargs):
             if not fence._collect_history():
                 err = (
                     "No search calls recorded. You must call a search "
@@ -309,7 +250,6 @@ def create_record_tool(
                     _on_reject(name, evidence, err)
                 return f"ERROR: {err}"
 
-            # Check 2: min evidence length
             if len(evidence.strip()) < fence._min_evidence_length:
                 err = (
                     f"Evidence too short (got {len(evidence.strip())} chars, "
@@ -320,7 +260,6 @@ def create_record_tool(
                     _on_reject(name, evidence, err)
                 return f"ERROR: {err}"
 
-            # Check 3: evidence must match search history
             ok, err = fence._verify_search_match(evidence)
             if not ok:
                 fence._log_rejection(name, evidence, err)
