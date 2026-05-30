@@ -171,7 +171,7 @@ def _number_match(evidence_line: str, search_text: str) -> bool:
 
     Only activates when the evidence line contains at least one number.
     Requires at least one number overlap AND some non-numeric text overlap
-    (at least 3 words in common) to prevent pure-number false positives.
+    (at least 2 non-stopword words in common) to prevent pure-number false positives.
     """
     ev_nums = extract_numbers(evidence_line)
     if not ev_nums:

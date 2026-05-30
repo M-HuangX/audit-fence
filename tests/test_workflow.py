@@ -90,6 +90,53 @@ def test_claim_record_auto_increment_id():
     assert r3.id == 3
 
 
+def test_independent_fences_have_separate_claim_ids():
+    """Two independent Fences should each start claim IDs at 1."""
+    fence_a = Fence()
+    fence_b = Fence()
+
+    @fence_a.track
+    def search_a(q: str) -> str:
+        return f"result_a {q} padding text"
+
+    @fence_b.track
+    def search_b(q: str) -> str:
+        return f"result_b {q} padding text"
+
+    rec_a = fence_a.record_tool(extra_fields=["finding"])
+    rec_b = fence_b.record_tool(extra_fields=["finding"])
+
+    search_a("x")
+    a1 = rec_a(claim="a1", claim_in_document="", evidence="result_a x padding text")
+    search_a("y")
+    a2 = rec_a(claim="a2", claim_in_document="", evidence="result_a y padding text")
+
+    search_b("z")
+    b1 = rec_b(claim="b1", claim_in_document="", evidence="result_b z padding text")
+
+    # Both fences start at 1 independently
+    assert a1.id == 1
+    assert a2.id == 2
+    assert b1.id == 1
+
+
+def test_record_tool_convenience_method():
+    """fence.record_tool() should behave identically to create_record_tool(fence, ...)."""
+    fence = Fence()
+
+    @fence.track
+    def search(q: str) -> str:
+        return f"result for {q} with padding text"
+
+    record = fence.record_tool(extra_fields=["finding"])
+    search("test")
+    r = record(claim="c", claim_in_document="", evidence="result for test with padding text", finding="found")
+    assert r.id == 1
+    assert r.claim == "c"
+    assert r.finding == "found"
+    assert fence.claims == [r]
+
+
 def test_claim_record_metadata():
     """metadata dict should be stored and serialized."""
     record = ClaimRecord(

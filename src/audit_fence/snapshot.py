@@ -730,6 +730,7 @@ class Snapshot:
 
         def decorator(fn: Callable) -> Callable:
             writer = self._get_writer(agent)
+            name = getattr(fn, "__name__", None) or getattr(fn, "name", str(fn))
 
             if inspect.iscoroutinefunction(fn):
 
@@ -740,7 +741,7 @@ class Snapshot:
                     try:
                         result = await fn(*args, **kwargs)
                         writer.record(
-                            tool_name=fn.__name__,
+                            tool_name=name,
                             input_data=input_data,
                             output_data=result,
                             duration_ms=(time.time() - start) * 1000,
@@ -749,7 +750,7 @@ class Snapshot:
                         return result
                     except Exception as e:
                         writer.record(
-                            tool_name=fn.__name__,
+                            tool_name=name,
                             input_data=input_data,
                             output_data=None,
                             duration_ms=(time.time() - start) * 1000,
@@ -768,7 +769,7 @@ class Snapshot:
                     try:
                         result = fn(*args, **kwargs)
                         writer.record(
-                            tool_name=fn.__name__,
+                            tool_name=name,
                             input_data=input_data,
                             output_data=result,
                             duration_ms=(time.time() - start) * 1000,
@@ -777,7 +778,7 @@ class Snapshot:
                         return result
                     except Exception as e:
                         writer.record(
-                            tool_name=fn.__name__,
+                            tool_name=name,
                             input_data=input_data,
                             output_data=None,
                             duration_ms=(time.time() - start) * 1000,

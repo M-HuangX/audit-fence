@@ -108,6 +108,7 @@ class TestManifestGeneration:
         assert totals["tool_calls"] == 3
         assert totals["artifacts"] == 1
         assert totals["errors"] == 0
+        assert totals["trace_bytes"] > 0
 
     def test_manifest_with_errors(self, tmp_path):
         snap = Snapshot(str(tmp_path / "trace"))
