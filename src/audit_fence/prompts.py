@@ -149,6 +149,114 @@ Call the record tool for each cross-reference found. When done:
 """
 
 
+MANIFEST_TEMPLATE = """\
+Available trace data from the production pipeline:
+{agent_lines}
+
+Pipeline flow: {pipeline_flow}
+
+Use the search tool to find evidence for each claim. Search for specific \
+values, names, or facts. Do not attempt to read entire files."""
+
+
+def format_manifest(manifest: dict) -> str:
+    """Format a manifest dict into a prompt section for the audit agent.
+
+    Takes a manifest dict (as produced by ``Snapshot.load_manifest()``) and
+    returns a human-readable summary listing agents, their tool call counts,
+    tools used, artifacts, and the dependency/pipeline flow.
+
+    Args:
+        manifest: A manifest dict with ``"agents"`` and optionally
+            ``"dependencies"`` keys.  See the Snapshot design doc (section 7)
+            for the full schema.
+
+    Returns:
+        Formatted text suitable for appending to an audit system prompt.
+
+    Example::
+
+        manifest = snapshot.load_manifest()
+        section = format_manifest(manifest)
+        # Produces:
+        # Available trace data from the production pipeline:
+        # - research/ (15 tool calls: get_income_statement x5, ...)
+        #   Artifact: research/analysis.md
+        # ...
+    """
+    agents = manifest.get("agents", {})
+    dependencies = manifest.get("dependencies", {})
+
+    # Build per-agent lines
+    agent_lines: list[str] = []
+    for agent_name, info in agents.items():
+        total_calls = info.get("tool_calls", 0)
+
+        # Format tool counts: "tool_a x5, tool_b x3"
+        tool_counts = info.get("tool_counts", {})
+        if tool_counts:
+            tool_parts = [f"{tool} x{count}" for tool, count in tool_counts.items()]
+            tools_str = ", ".join(tool_parts)
+            line = f"- {agent_name}/ ({total_calls} tool calls: {tools_str})"
+        else:
+            line = f"- {agent_name}/ ({total_calls} tool calls)"
+
+        agent_lines.append(line)
+
+        # Add artifact lines
+        artifacts = info.get("artifacts", [])
+        trace_dir = info.get("trace_dir", f"{agent_name}/")
+        for artifact in artifacts:
+            # Combine trace_dir with artifact filename
+            if trace_dir.endswith("/"):
+                artifact_path = f"{trace_dir}{artifact}"
+            else:
+                artifact_path = f"{trace_dir}/{artifact}"
+            agent_lines.append(f"  Artifact: {artifact_path}")
+
+    # Build pipeline flow from dependencies
+    # Topological hint: agents with no deps first, then dependents
+    if dependencies:
+        # Find root agents (not in any dependency list)
+        all_agents = list(agents.keys())
+        dependents = set(dependencies.keys())
+        roots = [a for a in all_agents if a not in dependents]
+
+        # Simple linear flow reconstruction
+        ordered: list[str] = []
+        remaining = set(all_agents)
+
+        # Start with roots
+        for r in roots:
+            if r in remaining:
+                ordered.append(r)
+                remaining.discard(r)
+
+        # Then add dependents in order, ensuring their deps come first
+        changed = True
+        while remaining and changed:
+            changed = False
+            for agent in list(remaining):
+                deps = dependencies.get(agent, [])
+                if all(d in ordered for d in deps):
+                    ordered.append(agent)
+                    remaining.discard(agent)
+                    changed = True
+
+        # Add any remaining (shouldn't happen with valid data)
+        for agent in remaining:
+            ordered.append(agent)
+
+        pipeline_flow = " -> ".join(ordered)
+    else:
+        pipeline_flow = " -> ".join(agents.keys())
+
+    return MANIFEST_TEMPLATE.format(
+        agent_lines="\n".join(agent_lines),
+        pipeline_flow=pipeline_flow,
+    )
+
+
 PROMPTS: dict[str, str] = {
     "verify_claims": VERIFY_CLAIMS,
     "find_evidence": FIND_EVIDENCE,

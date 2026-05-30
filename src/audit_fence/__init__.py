@@ -10,6 +10,7 @@ from .fence import (
 from .group import FenceGroup
 from .prompts import PROMPTS
 from .agent import AuditResult
+from .snapshot import Snapshot, ToolCallRecord
 from .tools import RipgrepBackend, SandboxedSearch
 from .workflow import ClaimRecord, create_record_tool
 
@@ -22,9 +23,11 @@ __all__ = [
     "RipgrepBackend",
     "SandboxedSearch",
     "SearchRecord",
+    "Snapshot",
+    "ToolCallRecord",
     "ValidationResult",
     "create_record_tool",
     "extract_numbers",
     "normalize_number",
 ]
-__version__ = "0.6.0"
+__version__ = "0.7.0"

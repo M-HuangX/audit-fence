@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -153,6 +154,94 @@ class FenceGroup:
                 if fence._upstream
             },
         }
+
+    @classmethod
+    def from_snapshot_manifest(
+        cls,
+        manifest: dict,
+        *,
+        document: str,
+        trace_dir: str,
+        per_agent_documents: dict[str, str] | None = None,
+    ) -> FenceGroup:
+        """Build a FenceGroup with audit topology from a snapshot manifest.
+
+        Creates one :class:`Fence` per agent listed in the manifest, with:
+
+        - **source** restricted to that agent's trace directory
+        - **document** set from ``per_agent_documents`` override, the first
+          artifact's content (if readable), or the ``document`` fallback
+        - **link topology** matching the manifest's declared dependencies
+
+        This is the bridge between production-side :class:`Snapshot` capture
+        and audit-side :class:`FenceGroup` enforcement.  It takes a plain
+        dict (not a ``Snapshot`` object) to avoid circular dependencies.
+
+        Args:
+            manifest: A manifest dict as produced by
+                ``Snapshot.load_manifest()``.  Must contain an ``"agents"``
+                key; ``"dependencies"`` is optional.
+            document: The final document to audit.  Used as the fallback
+                for agents that have no per-agent override and no readable
+                artifact.
+            trace_dir: Root trace directory on disk.  Each agent's
+                ``trace_dir`` from the manifest is resolved relative to this.
+            per_agent_documents: Optional mapping of
+                ``{agent_name: document_text}`` to override the document
+                for specific agents.
+
+        Returns:
+            A new :class:`FenceGroup` with one fence per agent, linked
+            according to the manifest's dependency graph.
+
+        Example::
+
+            manifest = json.load(open("trace/manifest.json"))
+            group = FenceGroup.from_snapshot_manifest(
+                manifest,
+                document=open("reports/final.md").read(),
+                trace_dir="trace/",
+            )
+        """
+        agents = manifest.get("agents", {})
+        dependencies = manifest.get("dependencies", {})
+
+        group = cls()
+
+        for agent_name, agent_info in agents.items():
+            fence = group.create(agent_name)
+
+            # Determine the agent's trace directory on disk
+            agent_trace = agent_info.get("trace_dir", f"{agent_name}/")
+            agent_dir = os.path.join(trace_dir, agent_trace)
+
+            # Set document: per-agent override > first artifact content > final document
+            if per_agent_documents and agent_name in per_agent_documents:
+                fence.set_document(per_agent_documents[agent_name])
+            elif agent_info.get("artifacts"):
+                artifact_path = os.path.join(agent_dir, agent_info["artifacts"][0])
+                try:
+                    with open(artifact_path, "r", encoding="utf-8") as f:
+                        fence.set_document(f.read())
+                except (OSError, IOError):
+                    # Artifact not readable — fall back to final document
+                    fence.set_document(document)
+            else:
+                fence.set_document(document)
+
+            # Set source restricted to this agent's trace directory
+            fence.set_source(agent_dir)
+
+        # Build link topology from dependencies
+        for agent_name, upstreams in dependencies.items():
+            if agent_name not in group:
+                continue
+            fence = group[agent_name]
+            for upstream_name in upstreams:
+                if upstream_name in group:
+                    fence.link(group[upstream_name])
+
+        return group
 
     @classmethod
     def restore(cls, data: dict) -> FenceGroup:

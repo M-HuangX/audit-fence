@@ -1,6 +1,6 @@
 [project]
 name = "audit-fence"
-version = "0.6.0"
+version = "0.7.0"
 description = "Programmatic enforcement for LLM agent evidence — search-verified citations, deterministic validation, zero hallucinated evidence."
 readme = "README.md"
 license = "MIT"
@@ -23,6 +23,16 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Software Development :: Quality Assurance",
+]
+
+[project.optional-dependencies]
+benchmark = [
+    "edgartools>=5.33",
+    "httpx>=0.27",
+    "tiktoken>=0.7",
+    "langchain-core>=0.3",
+    "langchain-openai>=0.3",
+    "langgraph>=0.3",
 ]
 
 [project.urls]

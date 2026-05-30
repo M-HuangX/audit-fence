@@ -140,6 +140,7 @@ async def run_audit(
     max_rounds: int = 200,
     extra_fields: list[str] | None = None,
     prompt_template: str | None = None,
+    manifest: dict | None = None,
     timeout: int = 900,
 ) -> AuditResult:
     """Run a complete audit using a LangGraph ReAct agent.
@@ -150,6 +151,10 @@ async def run_audit(
         max_rounds: Maximum agent reasoning rounds (default 200).
         extra_fields: Extra ClaimRecord fields the agent can fill.
         prompt_template: Override the default VERIFY_CLAIMS prompt.
+        manifest: Optional manifest dict (from ``Snapshot.load_manifest()``).
+            When provided, a formatted summary of available trace data is
+            appended to the system prompt, giving the audit agent guided
+            navigation of the source data.
         timeout: Timeout in seconds (default 900 = 15 minutes).
 
     Returns:
@@ -164,7 +169,7 @@ async def run_audit(
             "Install with: pip install langgraph langchain-core"
         )
 
-    from .prompts import VERIFY_CLAIMS
+    from .prompts import VERIFY_CLAIMS, format_manifest
 
     # Validate fence is configured
     if fence._resolved_document is None:
@@ -182,6 +187,10 @@ async def run_audit(
         document="the document provided below",
         data_source="the source data (use the search tool)",
     )
+
+    # Append manifest summary when provided
+    if manifest is not None:
+        system_prompt += "\n\n" + format_manifest(manifest)
 
     # User message = the document to audit
     doc_text = fence._resolved_document

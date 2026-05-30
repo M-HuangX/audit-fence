@@ -202,7 +202,8 @@ class Fence:
             llm: Any LangChain-compatible chat model
                 (``ChatOpenAI``, ``ChatAnthropic``, etc.).
             **kwargs: Forwarded to :func:`~audit_fence.agent.run_audit`
-                (``max_rounds``, ``timeout``, ``extra_fields``, etc.).
+                (``max_rounds``, ``timeout``, ``extra_fields``,
+                ``manifest``, etc.).
 
         Returns:
             :class:`~audit_fence.agent.AuditResult` with claims,
@@ -212,6 +213,11 @@ class Fence:
 
             from langchain_openai import ChatOpenAI
             result = await fence.audit(llm=ChatOpenAI(model="gpt-4o"))
+
+            # With manifest for guided navigation:
+            result = await fence.audit(
+                llm=llm, manifest=snapshot.load_manifest()
+            )
         """
         from .agent import run_audit
         return await run_audit(self, llm, **kwargs)
