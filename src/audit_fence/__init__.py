@@ -27,4 +27,4 @@ __all__ = [
     "extract_numbers",
     "normalize_number",
 ]
-__version__ = "0.5.0"
+__version__ = "0.6.0"

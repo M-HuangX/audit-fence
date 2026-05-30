@@ -38,16 +38,23 @@ The core rule: **you cannot record a citation unless it matches data you actuall
 
 ```
 Without enforcement:
-  Agent → "I found X in the data"  →  Record  →  ✓ accepted (unverified)
+  Audit Agent → "I found X in the data"  →  Record  →  ✓ accepted (unverified)
 
-With audit-fence:
-  Agent → search(query)            →  Result saved to tracked history
-  Agent → submit(                  →  Validation Gate
-           claim,                       ✓ search history exists?
-           claim_in_document,           ✓ evidence long enough?
-           evidence,                    ✓ evidence ∈ search history?
-           finding, ...                 ✓ claim in document?
-         )                         →  Accepted  or  REJECTED
+With audit-fence (happy path):
+  Audit Agent → search(query)             →  Result saved to tracked history
+  Audit Agent → submit(                   →  Validation Gate
+                 claim,                        ✓ search history exists?
+                 claim_in_document,            ✓ evidence long enough?
+                 evidence,                     ✓ evidence ∈ search history?
+                 finding, ...                  ✓ claim in document?
+               )                          →  Accepted
+
+With audit-fence (hallucination caught):
+  Audit Agent → submit(                   →  Validation Gate
+                 claim,                        ✗ no search history!
+                 claim_in_document,            ✗ text not in document!
+                 evidence="revenue was...",    ✗ fabricated — not from any search!
+               )                          →  REJECTED (agent must retry)
 ```
 
 Minimal integration. Full traceability. Model-agnostic. Four validation checks, pre-built audit agent.
@@ -140,6 +147,8 @@ Any domain where an AI-generated report must withstand regulatory scrutiny.
 
 ## Integration
 
+For the simplest path, use `fence.audit()` — see [Quick Start](#quick-start). The sections below cover manual integration for custom agents and pipelines.
+
 The core enforcement engine has no required dependencies. The pre-built audit agent (`fence.audit()`) uses LangGraph — install the model provider you prefer. For custom integration, audit-fence provides `wrap_tools()` for existing tool lists and decorators for new projects.
 
 ### Configuration
@@ -155,6 +164,18 @@ fence = Fence(
 )
 ```
 
+#### Setup methods
+
+After constructing a Fence, configure what it audits:
+
+```python
+fence.set_document(open("report.md").read())  # the report being audited
+fence.set_source("./source_data/")            # where to search (creates a RipgrepBackend)
+fence.set_output("audit/citations.jsonl")     # auto-persist every ClaimRecord
+```
+
+`set_document()` enables automatic `claim_in_document` verification. `set_source()` creates a tracked search tool (available as `fence.search`). `set_output()` auto-appends records to JSONL. All three accept callables for dynamic content — see individual sections below.
+
 #### Custom parameter names
 
 ```python
@@ -162,9 +183,9 @@ fence = Fence(
 def submit(claim: str, grep_output: str) -> dict: ...
 ```
 
-#### Source text verification
+#### Source text verification (per-decorator alternative)
 
-Optionally verify that the claim text exists in the source document being audited:
+If you prefer decorator-level configuration instead of `set_document()`, you can pass `source_text` directly to `@fence.enforce`:
 
 ```python
 report = open("report.md").read()
@@ -226,7 +247,7 @@ fence.rejections
 fence.save_log("enforcement_log.jsonl")
 ```
 
-### wrap_tools() — for existing codebases (recommended)
+### wrap_tools() — for existing codebases
 
 If you already have tools defined, `wrap_tools()` adds enforcement without modifying any function definitions:
 
@@ -290,13 +311,35 @@ When the agent submits invalid evidence, the tool returns `"ERROR: ..."`. The Re
 The decorated functions are regular callables. Use them in your tool dispatch however your framework requires:
 
 ```python
-# OpenAI function calling
+# OpenAI function calling — use your framework's schema helper
 tools_schema = [describe_function(fn) for fn in fence.tools]
 
 # Any custom framework
 for fn in fence.tools:
     register_tool(fn.__name__, fn, fn.__doc__)
 ```
+
+### DeepSeek (reasoning models)
+
+DeepSeek's reasoning models (R1, V3, V4 Flash) return a `reasoning_content` field that must be passed back in all subsequent API requests. LangChain's `ChatOpenAI` silently drops this field during serialization, causing 400 errors on multi-turn conversations. This is an [open upstream bug](https://github.com/langchain-ai/langchain/issues/34166) (6+ months unresolved as of May 2026).
+
+audit-fence provides a drop-in replacement:
+
+```python
+from audit_fence.compat import ChatOpenAIDeepSeek
+
+llm = ChatOpenAIDeepSeek(
+    model="deepseek-reasoner",
+    api_key="...",
+    base_url="https://api.deepseek.com",
+    extra_body={"thinking": {"type": "enabled"}},
+)
+
+# Works with fence.audit() and create_react_agent()
+result = await fence.audit(llm=llm)
+```
+
+`ChatOpenAIDeepSeek` fixes two classes of 400 errors: missing `reasoning_content` round-trip and unmatched `tool_call_id`s from invalid tool call arguments. When LangChain merges an upstream fix, replace with plain `ChatOpenAI` — the interface is identical.
 
 ---
 
@@ -693,7 +736,7 @@ audit-fence operates in the same paradigm as academic fact verification systems 
 | **What it does** | Evaluates factual precision | Evaluates RAG faithfulness | Classifies claim veracity | **Detects hallucinations + annotates sources** |
 | **Verification** | LLM judge | NLI model | Trained classifier | **Mechanical enforcement** |
 | **Source annotation** | No | No | No | **Yes — claim to source data** |
-| **Dependencies** | Retriever + LLM | LLM API | Training data | **LangGraph + any LLM** |
+| **Dependencies** | Retriever + LLM | LLM API | Training data | **Zero (core) / LangGraph + any LLM (audit agent)** |
 | **Designed for** | Research evaluation | RAG pipeline evaluation | Research benchmark | **Production compliance** |
 
 These approaches are complementary. FActScore and RAGAS evaluate output quality after generation. audit-fence enforces source traceability during generation — different stages, different guarantees.
