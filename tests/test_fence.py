@@ -887,7 +887,7 @@ class TestNumberMatchInFence:
 
 
 # ============================================================================
-# fence.wrap() API
+# fence.wrap_tools() API
 # ============================================================================
 
 
@@ -907,7 +907,7 @@ def test_wrap_with_glob_patterns():
     def unrelated_tool() -> str:
         return "hello"
 
-    protected = fence.wrap(
+    protected = fence.wrap_tools(
         [search_web, fetch_data, record_finding, unrelated_tool],
         search=["search_*", "fetch_*"],
         submit=["record_*"],
@@ -943,7 +943,7 @@ def test_wrap_with_function_refs():
     def my_submit(claim: str, evidence: str) -> dict:
         return {"claim": claim, "status": "ok"}
 
-    protected = fence.wrap(
+    protected = fence.wrap_tools(
         [my_search, my_submit],
         search=[my_search],
         submit=[my_submit],
@@ -976,7 +976,7 @@ def test_wrap_mixed_patterns_and_refs():
     def write_report(claim: str, evidence: str) -> dict:
         return {"claim": claim, "status": "ok"}
 
-    protected = fence.wrap(
+    protected = fence.wrap_tools(
         [search_web, grep_files, record_citation, write_report],
         search=["search_*", grep_files],  # one glob, one ref
         submit=[record_citation, "write_*"],  # one ref, one glob
@@ -1013,7 +1013,7 @@ def test_wrap_preserves_metadata():
         """Record a verified citation."""
         return {"claim": claim}
 
-    protected = fence.wrap(
+    protected = fence.wrap_tools(
         [search_evidence, record_citation],
         search=["search_*"],
         submit=["record_*"],
@@ -1033,7 +1033,7 @@ def test_wrap_no_double_wrap():
     def already_tracked(query: str) -> str:
         return f"result for {query} with extra text"
 
-    protected = fence.wrap(
+    protected = fence.wrap_tools(
         [already_tracked],
         search=["already_*"],
     )
@@ -1054,7 +1054,7 @@ def test_wrap_passthrough():
     def helper_tool() -> str:
         return "helper"
 
-    protected = fence.wrap(
+    protected = fence.wrap_tools(
         [helper_tool],
         search=["search_*"],
         submit=["record_*"],
@@ -1074,7 +1074,7 @@ def test_wrap_async_functions():
         async def submit_async(claim: str, evidence: str) -> dict:
             return {"claim": claim, "status": "ok"}
 
-        protected = fence.wrap(
+        protected = fence.wrap_tools(
             [search_async, submit_async],
             search=["search_*"],
             submit=["submit_*"],
@@ -1107,14 +1107,14 @@ def test_wrap_async_functions():
     asyncio.run(_run())
 
 
-def test_wrap_one_search():
-    """wrap_one() should wrap a single function as search."""
+def test_wrap_tool_search():
+    """wrap_tool() should wrap a single function as search."""
     fence = Fence()
 
     def my_search(query: str) -> str:
         return f"found {query} in the knowledge base"
 
-    wrapped = fence.wrap_one(my_search, role="search")
+    wrapped = fence.wrap_tool(my_search, role="search")
 
     assert wrapped.__name__ == "my_search"
     assert wrapped._fence_role == "search"
@@ -1124,8 +1124,8 @@ def test_wrap_one_search():
     assert "found test query" in fence.history[0].result_text
 
 
-def test_wrap_one_submit():
-    """wrap_one() should wrap a single function as submit."""
+def test_wrap_tool_submit():
+    """wrap_tool() should wrap a single function as submit."""
     fence = Fence()
 
     def my_search(query: str) -> str:
@@ -1134,8 +1134,8 @@ def test_wrap_one_submit():
     def my_submit(claim: str, evidence: str) -> dict:
         return {"claim": claim, "status": "ok"}
 
-    search_fn = fence.wrap_one(my_search, role="search")
-    submit_fn = fence.wrap_one(my_submit, role="submit")
+    search_fn = fence.wrap_tool(my_search, role="search")
+    submit_fn = fence.wrap_tool(my_submit, role="submit")
 
     assert submit_fn.__name__ == "my_submit"
     assert submit_fn._fence_role == "submit"
@@ -1157,15 +1157,15 @@ def test_wrap_one_submit():
     assert result["status"] == "ok"
 
 
-def test_wrap_one_invalid_role():
-    """wrap_one() should raise ValueError for invalid role."""
+def test_wrap_tool_invalid_role():
+    """wrap_tool() should raise ValueError for invalid role."""
     fence = Fence()
 
     def my_fn() -> str:
         return "hello"
 
     try:
-        fence.wrap_one(my_fn, role="invalid")
+        fence.wrap_tool(my_fn, role="invalid")
         assert False, "Should have raised ValueError"
     except ValueError as e:
         assert "invalid" in str(e)
@@ -1174,7 +1174,7 @@ def test_wrap_one_invalid_role():
 def test_wrap_empty_list():
     """wrap() should handle an empty tool list."""
     fence = Fence()
-    result = fence.wrap([], search=["search_*"], submit=["record_*"])
+    result = fence.wrap_tools([], search=["search_*"], submit=["record_*"])
     assert result == []
 
 
@@ -1194,7 +1194,7 @@ def test_wrap_order_preserved():
     def delta() -> str:
         return "d"
 
-    protected = fence.wrap(
+    protected = fence.wrap_tools(
         [alpha, beta, gamma, delta],
         search=["alpha", "gamma"],
     )
@@ -1215,7 +1215,7 @@ def test_wrap_evidence_param_override():
     def my_submit(claim: str, grep_output: str) -> dict:
         return {"claim": claim, "status": "ok"}
 
-    protected = fence.wrap(
+    protected = fence.wrap_tools(
         [my_search, my_submit],
         search=["my_search"],
         submit=["my_submit"],
@@ -1246,7 +1246,7 @@ def test_track_all_mode():
     def tool_b(x: str) -> str:
         return f"output from b: {x}"
 
-    protected = fence.wrap([tool_a, tool_b])
+    protected = fence.wrap_tools([tool_a, tool_b])
 
     protected[0]("hello")
     protected[1]("world")
@@ -1270,7 +1270,7 @@ def test_track_all_with_explicit_patterns():
         return "other"
 
     # When explicit patterns are given, track_all doesn't force everything
-    protected = fence.wrap(
+    protected = fence.wrap_tools(
         [search_fn, submit_fn, other_fn],
         search=["search_*"],
         submit=["submit_*"],

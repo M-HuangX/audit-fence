@@ -117,6 +117,7 @@ class Fence:
         self._document: str | Callable[[], str] | None = None
         self._output_path: str | None = None
         self._claims: list = []  # list[ClaimRecord] (avoid circular import)
+        self._search_fn: Callable | None = None  # set by set_source()
 
     # -- Public properties ---------------------------------------------------
 
@@ -160,6 +161,60 @@ class Fence:
                 (for dynamic content).
         """
         self._document = text
+
+    def set_source(self, path: str, **kwargs: Any) -> None:
+        """Set the source data directory for the audit agent to search.
+
+        Creates a :class:`~audit_fence.tools.RipgrepBackend` pointed at
+        *path* and registers it as a tracked search tool.  The resulting
+        search function is available as :attr:`search`.
+
+        Args:
+            path: Directory containing source data / trace files.
+            **kwargs: Forwarded to :class:`RipgrepBackend` (e.g.
+                ``max_matches``, ``rg_path``).
+        """
+        from .tools import RipgrepBackend
+
+        grep = RipgrepBackend(root=path, **kwargs)
+        self._search_fn = self.wrap_tool(grep, role="search")
+
+    @property
+    def search(self) -> Callable:
+        """The search tool created by :meth:`set_source`.
+
+        Raises:
+            RuntimeError: If :meth:`set_source` has not been called.
+        """
+        if self._search_fn is None:
+            raise RuntimeError(
+                "No search tool configured. Call fence.set_source(path) first."
+            )
+        return self._search_fn
+
+    async def audit(self, llm: Any, **kwargs: Any) -> Any:
+        """Run a complete audit using a pre-built ReAct agent.
+
+        This is the simplest way to run an audit — one method call.
+        Requires ``langgraph`` and a LangChain-compatible chat model.
+
+        Args:
+            llm: Any LangChain-compatible chat model
+                (``ChatOpenAI``, ``ChatAnthropic``, etc.).
+            **kwargs: Forwarded to :func:`~audit_fence.agent.run_audit`
+                (``max_rounds``, ``timeout``, ``extra_fields``, etc.).
+
+        Returns:
+            :class:`~audit_fence.agent.AuditResult` with claims,
+            rejections, and summary.
+
+        Example::
+
+            from langchain_openai import ChatOpenAI
+            result = await fence.audit(llm=ChatOpenAI(model="gpt-4o"))
+        """
+        from .agent import run_audit
+        return await run_audit(self, llm, **kwargs)
 
     def set_output(self, path: str) -> None:
         """Set the JSONL output file path for claim persistence.
@@ -669,9 +724,9 @@ class Fence:
         if self._history_limit is not None and len(self._history) > self._history_limit:
             self._history = self._history[-self._history_limit:]
 
-    # -- wrap / wrap_one -------------------------------------------------------
+    # -- wrap_tools / wrap_tool ------------------------------------------------
 
-    def wrap(
+    def wrap_tools(
         self,
         tools: list[Callable],
         *,
@@ -727,7 +782,7 @@ class Fence:
 
         return result
 
-    def wrap_one(
+    def wrap_tool(
         self,
         fn: Callable,
         role: str,

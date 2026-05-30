@@ -2,11 +2,11 @@
 
 **Trace every claim to its source. Identify every hallucination. Before the report reaches your client.**
 
-Every AI agent system hallucinates — regardless of model, framework, or prompt engineering. audit-fence provides automated hallucination detection and source citation for any orchestration pipeline. Zero dependencies.
+Every AI agent system hallucinates — regardless of model, framework, or prompt engineering. audit-fence provides automated hallucination detection and source citation for any orchestration pipeline. Model-agnostic, framework-compatible, with a pre-built audit agent that runs out of the box.
 
 <p>
   <img src="https://img.shields.io/badge/python-3.10+-blue?logo=python&logoColor=white" alt="Python"/>
-  <img src="https://img.shields.io/badge/dependencies-zero-brightgreen" alt="Zero Dependencies"/>
+  <img src="https://img.shields.io/badge/model-agnostic-brightgreen" alt="Model Agnostic"/>
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License"/>
 </p>
 
@@ -50,30 +50,15 @@ With audit-fence:
          )                         →  Accepted  or  REJECTED
 ```
 
-Minimal integration. Full traceability. Zero dependencies. Two decorators, four validation checks.
+Minimal integration. Full traceability. Model-agnostic. Four validation checks, pre-built audit agent.
 
 <p align="center">
   <img src="docs/mechanism.png" alt="Runtime enforcement — how audit-fence verifies evidence" width="100%"/>
 </p>
 
-**Search** — audit-fence ships with `RipgrepBackend`, a ready-to-use search tool backed by [ripgrep](https://github.com/BurntSushi/ripgrep). Point it at your data directory and results are automatically tracked. For custom sources (SQL, APIs, vector stores), wrap any function with `@fence.track`.
+**Search** — point audit-fence at your source data directory (where your production system's outputs and trace files are stored) and the audit agent searches them claim by claim using [ripgrep](https://github.com/BurntSushi/ripgrep). Results are automatically tracked for enforcement.
 
-```python
-from audit_fence import Fence, RipgrepBackend
-
-fence = Fence()
-grep = RipgrepBackend(root="./source_data/")
-search = fence.wrap_one(grep, role="search")     # one line — ready to use
-```
-
-**Evidence submission** — `create_record_tool()` gives you a fully configured submission tool out of the box: enforcement checks, structured `ClaimRecord` output, and auto-persistence to JSONL. For custom submission logic, wrap your own function with `@fence.enforce`.
-
-```python
-from audit_fence import create_record_tool
-
-record = create_record_tool(fence, extra_fields=["finding", "source_tool"])
-# That's it — record() is now an enforced tool that produces ClaimRecords
-```
+**Evidence submission** — `create_record_tool()` gives you a fully configured submission tool out of the box: enforcement checks, structured `ClaimRecord` output, and auto-persistence to JSONL.
 
 Before each submission executes, the fence validates:
 
@@ -97,44 +82,37 @@ The enforcement doesn't just catch fabrication after the fact; it **structurally
 ## Quick Start
 
 ```bash
-pip install audit-fence
+pip install audit-fence langgraph langchain-openai
 ```
 
 ```python
-from audit_fence import Fence, RipgrepBackend, create_record_tool
+from audit_fence import Fence
+from langchain_openai import ChatOpenAI
 
 fence = Fence()
-fence.set_document(open("report.md").read())       # the report being audited
-fence.set_output("audit/citations.jsonl")           # auto-persist every record
+fence.set_document(open("report.md").read())    # the report being audited
+fence.set_source("./source_data/")              # where to search (uses ripgrep)
+fence.set_output("audit/citations.jsonl")       # auto-persist every record
 
-# Search — built-in ripgrep backend, or bring your own
-grep = RipgrepBackend(root="./source_data/")
-search = fence.wrap_one(grep, role="search")
+result = await fence.audit(llm=ChatOpenAI(model="gpt-4o", temperature=0.1))
 
-# Record — built-in enforcement + structured output
-record = create_record_tool(fence, extra_fields=["finding", "source_tool"])
-
-# Works: search first, then submit matching evidence
-search("revenue")
-record(
-    claim="Revenue was $5.1B",
-    claim_in_document="revenue of $5.1 billion",    # must exist in report.md
-    evidence="<verbatim text from search output>",   # must match search history
-    finding="found",
-)
-
-# Blocked: submit without searching
-fence.reset()
-record(claim="...", claim_in_document="...", evidence="anything")
-# => ERROR: No search calls recorded.
-
-# Blocked: submit fabricated evidence
-search("revenue")
-record(claim="...", claim_in_document="...", evidence="fabricated text")
-# => ERROR: Evidence does not match any recent search result.
+print(f"{result.summary['total']} claims audited")
+print(f"{result.summary.get('found', 0)} found, {result.summary.get('not-found', 0)} not found")
+print(f"{len(result.rejections)} enforcement rejections")
 ```
 
-Both `@fence.track` and `@fence.enforce` transparently support async functions — no separate API needed.
+Works with any LangChain-compatible model:
+
+```bash
+pip install langgraph langchain-anthropic   # for Claude
+pip install langgraph langchain-openai      # for GPT
+pip install langgraph langchain-community   # for DeepSeek, Ollama, etc.
+```
+
+```python
+from langchain_anthropic import ChatAnthropic
+result = await fence.audit(llm=ChatAnthropic(model="claude-sonnet-4-20250514"))
+```
 
 See [`examples/`](examples/) for complete, runnable scripts including a [financial report audit](examples/financial_report.py) and [LangGraph integration](examples/langchain_agent.py).
 
@@ -162,7 +140,7 @@ Any domain where an AI-generated report must withstand regulatory scrutiny.
 
 ## Integration
 
-audit-fence has **zero dependencies**. It provides two integration paths: `wrap()` for adding enforcement to existing tool lists, and decorators for new projects.
+The core enforcement engine has no required dependencies. The pre-built audit agent (`fence.audit()`) uses LangGraph — install the model provider you prefer. For custom integration, audit-fence provides `wrap_tools()` for existing tool lists and decorators for new projects.
 
 ### Configuration
 
@@ -173,7 +151,7 @@ fence = Fence(
     history_window=20,        # How many recent searches to check against (default: 20)
     history_limit=100,        # Max total records kept in memory (default: unlimited)
     context={"ticker": "AAPL", "phase": "audit"},  # Attached to every rejection log entry
-    track_all=False,          # When True, wrap() tracks ALL tools (see Soft Enforcement)
+    track_all=False,          # When True, wrap_tools() tracks ALL tools (see Soft Enforcement)
 )
 ```
 
@@ -248,9 +226,9 @@ fence.rejections
 fence.save_log("enforcement_log.jsonl")
 ```
 
-### wrap() — for existing codebases (recommended)
+### wrap_tools() — for existing codebases (recommended)
 
-If you already have tools defined, `wrap()` adds enforcement without modifying any function definitions:
+If you already have tools defined, `wrap_tools()` adds enforcement without modifying any function definitions:
 
 ```python
 from audit_fence import Fence
@@ -261,7 +239,7 @@ fence = Fence()
 existing_tools = [search_web, get_financials, analyze_data, write_report]
 
 # One call: classify by name pattern, get back enforced tools
-protected_tools = fence.wrap(
+protected_tools = fence.wrap_tools(
     existing_tools,
     search=["search_*", "get_*"],     # these get tracked
     submit=["write_*"],               # these get enforced
@@ -273,7 +251,7 @@ agent = create_react_agent(llm, protected_tools)
 Tools matching `search` patterns are tracked. Tools matching `submit` patterns are enforced. Unmatched tools pass through unchanged. You can also match by function reference:
 
 ```python
-protected_tools = fence.wrap(
+protected_tools = fence.wrap_tools(
     existing_tools,
     search=[search_web, get_financials],
     submit=[write_report],
@@ -504,11 +482,11 @@ manager = Fence(name="manager")
 manager.link(worker_a, worker_b)
 
 # Workers search independently
-tools_a = worker_a.wrap(worker_a_tools, search=["search_*"])
-tools_b = worker_b.wrap(worker_b_tools, search=["search_*"])
+tools_a = worker_a.wrap_tools(worker_a_tools, search=["search_*"])
+tools_b = worker_b.wrap_tools(worker_b_tools, search=["search_*"])
 
 # Manager validates against its own history PLUS both workers'
-manager_tools = manager.wrap(
+manager_tools = manager.wrap_tools(
     [search_summary, write_report],
     search=["search_*"],
     submit=["write_*"],
@@ -594,11 +572,11 @@ from audit_fence import RipgrepBackend, SandboxedSearch, Fence
 fence = Fence()
 
 grep = RipgrepBackend(root="./trace/")
-search = fence.wrap_one(grep, role="search")
+search = fence.wrap_tool(grep, role="search")
 
 # With sandbox
 sandboxed = SandboxedSearch(backend=grep, allowed_dirs=["tools/"])
-search = fence.wrap_one(sandboxed, role="search")
+search = fence.wrap_tool(sandboxed, role="search")
 ```
 
 Requires `rg` (ripgrep) installed on the system — no Python dependencies added.
@@ -631,7 +609,7 @@ Not every agent has explicit submit tools. Some agents search, reason, and produ
 from audit_fence import Fence
 
 fence = Fence(track_all=True)
-tools = fence.wrap(existing_tools)
+tools = fence.wrap_tools(existing_tools)
 
 agent = create_react_agent(llm, tools)
 result = await agent.ainvoke({"messages": [HumanMessage(content="Analyze AAPL")]})
@@ -715,7 +693,7 @@ audit-fence operates in the same paradigm as academic fact verification systems 
 | **What it does** | Evaluates factual precision | Evaluates RAG faithfulness | Classifies claim veracity | **Detects hallucinations + annotates sources** |
 | **Verification** | LLM judge | NLI model | Trained classifier | **Mechanical enforcement** |
 | **Source annotation** | No | No | No | **Yes — claim to source data** |
-| **Dependencies** | Retriever + LLM | LLM API | Training data | **Zero** |
+| **Dependencies** | Retriever + LLM | LLM API | Training data | **LangGraph + any LLM** |
 | **Designed for** | Research evaluation | RAG pipeline evaluation | Research benchmark | **Production compliance** |
 
 These approaches are complementary. FActScore and RAGAS evaluate output quality after generation. audit-fence enforces source traceability during generation — different stages, different guarantees.

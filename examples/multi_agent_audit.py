@@ -200,7 +200,7 @@ def main():
     r1.set_output("/tmp/audit_fence_r1_fundamental.jsonl")
 
     # Track search results
-    search_r1 = r1.wrap_one(grep_backend, role="search")
+    search_r1 = r1.wrap_tool(grep_backend, role="search")
 
     # Enrich: resolve grep coordinates → tool call info.
     # Returns None to reject if resolution fails.
@@ -302,7 +302,7 @@ def main():
         backend=specialist_grep,
         allowed_dirs=["trace/specialist_outputs/"],
     )
-    search_r2a = r2a.wrap_one(sandboxed_r2a, role="search")
+    search_r2a = r2a.wrap_tool(sandboxed_r2a, role="search")
 
     # Enrich: cross-reference with R1 claims for provenance chain
     def enrich_r2a(record: ClaimRecord) -> ClaimRecord | None:

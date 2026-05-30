@@ -9,10 +9,12 @@ from .fence import (
 )
 from .group import FenceGroup
 from .prompts import PROMPTS
+from .agent import AuditResult
 from .tools import RipgrepBackend, SandboxedSearch
 from .workflow import ClaimRecord, create_record_tool
 
 __all__ = [
+    "AuditResult",
     "ClaimRecord",
     "Fence",
     "FenceGroup",

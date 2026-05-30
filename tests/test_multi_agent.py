@@ -612,7 +612,7 @@ def test_history_limit_with_wrap():
     def my_search(query: str) -> str:
         return f"wrapped result for {query} with padding"
 
-    protected = fence.wrap([my_search], search=["*"])
+    protected = fence.wrap_tools([my_search], search=["*"])
 
     protected[0]("alpha")
     protected[0]("beta")
@@ -640,8 +640,8 @@ def test_wrap_with_linked_fences():
     def submit_tool(claim: str, evidence: str) -> dict:
         return {"claim": claim, "status": "ok"}
 
-    worker_tools = worker.wrap([search_tool], search=["*"])
-    manager_tools = manager.wrap([submit_tool], submit=["*"])
+    worker_tools = worker.wrap_tools([search_tool], search=["*"])
+    manager_tools = manager.wrap_tools([submit_tool], submit=["*"])
 
     # Worker searches
     worker_tools[0]("revenue analysis")
@@ -688,8 +688,8 @@ def test_wrap_submit_no_own_history_but_upstream():
     def submit_fn(claim: str, evidence: str) -> dict:
         return {"claim": claim, "status": "ok"}
 
-    upstream_tools = upstream.wrap([search_fn], search=["*"])
-    downstream_tools = downstream.wrap([submit_fn], submit=["*"])
+    upstream_tools = upstream.wrap_tools([search_fn], search=["*"])
+    downstream_tools = downstream.wrap_tools([submit_fn], submit=["*"])
 
     # Only upstream has history
     upstream_tools[0]("important fact")

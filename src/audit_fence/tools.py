@@ -122,7 +122,7 @@ class RipgrepBackend:
         sandboxed = SandboxedSearch(backend=grep, allowed_dirs=["tools/"])
 
         # Track results in fence history
-        search = fence.wrap_one(sandboxed, role="search")
+        search = fence.wrap_tool(sandboxed, role="search")
 
     Requires ``rg`` (ripgrep) to be installed on the system.
     No Python dependencies are added — the zero-dependency promise

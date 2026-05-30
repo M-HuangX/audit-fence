@@ -237,7 +237,7 @@ def test_claim_in_document_not_set():
 
 
 def test_claim_in_document_with_wrap():
-    """claim_in_document enforcement should work via fence.wrap() too."""
+    """claim_in_document enforcement should work via fence.wrap_tools() too."""
     fence = Fence()
     fence.set_document("The P/E ratio is 18.9x based on trailing earnings.")
 
@@ -247,7 +247,7 @@ def test_claim_in_document_with_wrap():
     def record_fn(claim: str, claim_in_document: str, evidence: str) -> dict:
         return {"claim": claim, "status": "ok"}
 
-    wrapped = fence.wrap(
+    wrapped = fence.wrap_tools(
         [search_fn, record_fn],
         search=["search_fn"],
         submit=["record_fn"],
@@ -1751,7 +1751,7 @@ def test_ripgrep_backend_composable_with_sandbox(tmp_path):
 
 
 def test_ripgrep_backend_with_fence_track(tmp_path):
-    """RipgrepBackend should work with fence.wrap_one() for history tracking."""
+    """RipgrepBackend should work with fence.wrap_tool() for history tracking."""
     from audit_fence import RipgrepBackend, FenceGroup
 
     reset_claim_ids()
@@ -1770,7 +1770,7 @@ def test_ripgrep_backend_with_fence_track(tmp_path):
     group = FenceGroup()
     fence = group.create("test_fence")
 
-    search = fence.wrap_one(rg, role="search")
+    search = fence.wrap_tool(rg, role="search")
     result = search("5098", "tools/")
     assert "5098" in result
 
