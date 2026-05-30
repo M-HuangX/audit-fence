@@ -34,14 +34,19 @@ audit-fence enforces a single rule: **you cannot record a citation unless it mat
 
 ```
 Without enforcement:
-  Audit agent → "I found X in the data"  →  Record  →  ✓ accepted (unverified)
+  Agent → "I found X in the data"  →  Record  →  ✓ accepted (unverified)
 
 With audit-fence:
-  Audit agent → search("X")              →  Result recorded to history
-  Audit agent → submit(evidence="X...")  →  Verify evidence ∈ search history  →  ✓ or REJECTED
+  Agent → search(query)            →  Result saved to tracked history
+  Agent → submit(                  →  Validation Gate
+           claim,                       ✓ search history exists?
+           claim_in_document,           ✓ evidence long enough?
+           evidence,                    ✓ evidence ∈ search history?
+           finding, ...                 ✓ claim in document?
+         )                         →  Accepted  or  REJECTED
 ```
 
-Two decorators. Three validation checks. Zero dependencies.
+Two decorators. Four validation checks. Zero dependencies.
 
 <p align="center">
   <img src="docs/mechanism.png" alt="Runtime enforcement — how audit-fence verifies evidence" width="100%"/>
@@ -54,8 +59,9 @@ Two decorators. Three validation checks. Zero dependencies.
 | Check | What it validates | On failure |
 |-------|------------------|------------|
 | **Search history** | At least one search has been performed | Rejected: "No search calls recorded" |
-| **Evidence match** | Submitted evidence is a character-level substring of a recent search result | Rejected: "Evidence does not match any recent search result" |
-| **Source text** *(optional)* | Claim text exists in the source document being audited | Rejected: "Claim text not found in the source document" |
+| **Evidence length** | Evidence meets minimum length (`min_evidence_length`, default 20) | Rejected: "Evidence too short" |
+| **Evidence match** | Submitted evidence is a verbatim substring of a tracked search result | Rejected: "Evidence does not match any recent search result" |
+| **Claim in document** *(optional)* | Claim text is a verbatim substring of the audited document | Rejected: "Claim text not found in the source document" |
 
 If any check fails, the function is **not called**. An `ERROR` string is returned (which ReAct agents naturally retry on), and the rejection is logged with timestamp, tool name, and reason.
 
