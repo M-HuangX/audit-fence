@@ -30,7 +30,11 @@ Recent [mechanistic analysis of transformer internals](https://doi.org/10.1007/9
 
 ## How It Works
 
-audit-fence enforces a single rule: **you cannot record a citation unless it matches data you actually searched for.** One rule, enforced by code.
+Your agent system generates a report. A separate **audit agent** — any LLM you choose — reviews that report against the underlying source data and, optionally, the reasoning traces from your pipeline. audit-fence **programmatically constrains** every tool this audit agent operates with. By requiring a targeted `search()` before every evidence submission, it forces relevant source material to the **tail of the context window** — where transformer attention is strongest — rather than relying on what the agent "remembers" from the middle of a long context, where hallucination is most likely. This infrastructure-level design maximally compresses the probability of the audit agent itself fabricating evidence.
+
+The approach has been [systematically evaluated](#proven-effective) on real-world financial documents with deterministic ground truth, confirming its precision and reliability as an automated audit system.
+
+The core rule: **you cannot record a citation unless it matches data you actually searched for.** One rule, enforced by code.
 
 ```
 Without enforcement:
@@ -46,24 +50,41 @@ With audit-fence:
          )                         →  Accepted  or  REJECTED
 ```
 
-Two decorators. Four validation checks. Zero dependencies.
+Minimal integration. Full traceability. Zero dependencies. Two decorators, four validation checks.
 
 <p align="center">
   <img src="docs/mechanism.png" alt="Runtime enforcement — how audit-fence verifies evidence" width="100%"/>
 </p>
 
-**`@fence.track`** wraps your search tool. Every search result is recorded in an internal history.
+**Search** — audit-fence ships with `RipgrepBackend`, a ready-to-use search tool backed by [ripgrep](https://github.com/BurntSushi/ripgrep). Point it at your data directory and results are automatically tracked. For custom sources (SQL, APIs, vector stores), wrap any function with `@fence.track`.
 
-**`@fence.enforce`** wraps your evidence submission tool. Before the function executes, it validates:
+```python
+from audit_fence import Fence, RipgrepBackend
+
+fence = Fence()
+grep = RipgrepBackend(root="./source_data/")
+search = fence.wrap_one(grep, role="search")     # one line — ready to use
+```
+
+**Evidence submission** — `create_record_tool()` gives you a fully configured submission tool out of the box: enforcement checks, structured `ClaimRecord` output, and auto-persistence to JSONL. For custom submission logic, wrap your own function with `@fence.enforce`.
+
+```python
+from audit_fence import create_record_tool
+
+record = create_record_tool(fence, extra_fields=["finding", "source_tool"])
+# That's it — record() is now an enforced tool that produces ClaimRecords
+```
+
+Before each submission executes, the fence validates:
 
 | Check | What it validates | On failure |
 |-------|------------------|------------|
-| **Search history** | At least one search has been performed | Rejected: "No search calls recorded" |
+| **Search history** | Recent search history is not empty — the agent must have searched before submitting | Rejected: "No search calls recorded" |
 | **Evidence length** | Evidence meets minimum length (`min_evidence_length`, default 20) | Rejected: "Evidence too short" |
-| **Evidence match** | Submitted evidence is a verbatim substring of a tracked search result | Rejected: "Evidence does not match any recent search result" |
-| **Claim in document** *(optional)* | Claim text is a verbatim substring of the audited document | Rejected: "Claim text not found in the source document" |
+| **Evidence match** | Submitted evidence is a verbatim substring of a recent search result — this is the core enforcement that ties each submission to a specific search output | Rejected: "Evidence does not match any recent search result" |
+| **Claim in document** | The agent must specify which verbatim text in the report it is auditing — verified as an exact substring of the document provided via `set_document()` | Rejected: "Claim text not found in the source document" |
 
-If any check fails, the function is **not called**. An `ERROR` string is returned (which ReAct agents naturally retry on), and the rejection is logged with timestamp, tool name, and reason.
+If any check fails, the submission is **blocked** and the agent is asked to retry. Every rejection is logged for audit review.
 
 ### Why this works
 
@@ -80,32 +101,36 @@ pip install audit-fence
 ```
 
 ```python
-from audit_fence import Fence
+from audit_fence import Fence, RipgrepBackend, create_record_tool
 
 fence = Fence()
+fence.set_document(open("report.md").read())       # the report being audited
+fence.set_output("audit/citations.jsonl")           # auto-persist every record
 
-@fence.track
-def search(query: str) -> str:
-    """Your search tool — results are automatically tracked."""
-    return my_search_backend(query)  # ripgrep, SQL, API call, etc.
+# Search — built-in ripgrep backend, or bring your own
+grep = RipgrepBackend(root="./source_data/")
+search = fence.wrap_one(grep, role="search")
 
-@fence.enforce
-def record_citation(claim: str, evidence: str) -> dict:
-    """Submit evidence — must match a recent search result."""
-    return {"claim": claim, "evidence": evidence, "status": "recorded"}
+# Record — built-in enforcement + structured output
+record = create_record_tool(fence, extra_fields=["finding", "source_tool"])
 
 # Works: search first, then submit matching evidence
 search("revenue")
-record_citation(claim="Revenue $5.1B", evidence="<paste from search output>")
+record(
+    claim="Revenue was $5.1B",
+    claim_in_document="revenue of $5.1 billion",    # must exist in report.md
+    evidence="<verbatim text from search output>",   # must match search history
+    finding="found",
+)
 
 # Blocked: submit without searching
 fence.reset()
-record_citation(claim="Revenue $5.1B", evidence="anything")
-# => ERROR: No search calls recorded. You must call a search tool first.
+record(claim="...", claim_in_document="...", evidence="anything")
+# => ERROR: No search calls recorded.
 
 # Blocked: submit fabricated evidence
 search("revenue")
-record_citation(claim="Revenue $5.1B", evidence="fabricated text not in results")
+record(claim="...", claim_in_document="...", evidence="fabricated text")
 # => ERROR: Evidence does not match any recent search result.
 ```
 
