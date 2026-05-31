@@ -2,7 +2,7 @@
 
 Demonstrates:
 - Search history enforcement (evidence must match grep results)
-- Source text verification (claim must exist in the actual report)
+- Document verification (claim must exist in the actual report)
 - Rejection logging
 """
 
@@ -17,6 +17,7 @@ Free cash flow reached $22.6B, supporting continued share buybacks.
 """
 
 fence = Fence()
+fence.set_document(REPORT)
 
 
 @fence.track
@@ -33,19 +34,15 @@ def grep_trace(pattern: str, path: str = "tools/") -> str:
     return data.get(pattern, f"No matches for '{pattern}' in {path}")
 
 
-@fence.enforce(
-    evidence_param="grep_evidence",
-    claim_param="claim_in_report",
-    source_text=REPORT,
-)
+@fence.enforce(evidence_param="grep_evidence")
 def record_source_evidence(
-    claim_in_report: str,
+    claim_in_document: str,
     grep_evidence: str,
     source_tool: str = "",
 ) -> dict:
     """Record evidence tracing a report claim to raw data."""
     return {
-        "claim": claim_in_report,
+        "claim": claim_in_document,
         "evidence": grep_evidence,
         "source_tool": source_tool,
         "status": "recorded",
@@ -56,7 +53,7 @@ def record_source_evidence(
 
 grep_trace("105.6|105600")
 result = record_source_evidence(
-    claim_in_report="revenue of $105.6B",
+    claim_in_document="revenue of $105.6B",
     grep_evidence='"totalRevenue": 105600000000  [@ tool_call #2: get_income_statement]',
     source_tool="get_income_statement",
 )
@@ -65,7 +62,7 @@ print(f"1. Valid:     {result}")
 # --- Fabricated evidence: search was done, but evidence doesn't match ---
 
 result = record_source_evidence(
-    claim_in_report="revenue of $105.6B",
+    claim_in_document="revenue of $105.6B",
     grep_evidence='"totalRevenue": 999999999999',  # fabricated — not in grep output
     source_tool="get_income_statement",
 )
@@ -75,7 +72,7 @@ print(f"2. Fabricated: {result}")
 
 grep_trace("32.1")
 result = record_source_evidence(
-    claim_in_report="Operating margin expanded to 45.0%",  # report says 32.1%
+    claim_in_document="Operating margin expanded to 45.0%",  # report says 32.1%
     grep_evidence='"operatingMargin": 0.321  [@ tool_call #3: get_financial_metrics]',
     source_tool="get_financial_metrics",
 )
@@ -84,7 +81,7 @@ print(f"3. False claim: {result}")
 # --- Valid: operating margin ---
 
 result = record_source_evidence(
-    claim_in_report="Operating margin expanded to 32.1%",
+    claim_in_document="Operating margin expanded to 32.1%",
     grep_evidence='"operatingMargin": 0.321  [@ tool_call #3: get_financial_metrics]',
     source_tool="get_financial_metrics",
 )

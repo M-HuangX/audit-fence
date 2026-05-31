@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -129,8 +130,12 @@ class FenceGroup:
 
     def save_log(self, path: str | Path) -> None:
         """Save all rejections from all fences to a JSONL file."""
-        for fence in self._fences.values():
-            fence.save_log(path)
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            for fence in self._fences.values():
+                for entry in fence.rejections:
+                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
     def reset(self) -> None:
         """Reset all fences in the group."""

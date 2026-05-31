@@ -654,27 +654,6 @@ def test_wrap_with_linked_fences():
     assert result["status"] == "ok"
 
 
-def test_validate_output_with_linked_fences():
-    """validate_output should see upstream history via links."""
-    worker = Fence(name="worker")
-    manager = Fence(name="manager")
-    manager.link(worker)
-
-    @worker.track
-    def search_w(query: str) -> str:
-        return "The company reported revenue of $5.1B in fiscal year 2025."
-
-    search_w("revenue")
-
-    # Manager's validate_output should see worker's history
-    result = manager.validate_output(
-        'The report states "The company reported revenue of $5.1B in fiscal year 2025." as a key finding.'
-    )
-
-    assert result.ok is True
-    assert len(result.found) == 1
-
-
 def test_wrap_submit_no_own_history_but_upstream():
     """Submit via wrap should pass when only upstream has history (not self)."""
     upstream = Fence(name="source")

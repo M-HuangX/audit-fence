@@ -16,10 +16,8 @@ if TYPE_CHECKING:
     from .workflow import ClaimRecord
 
 from .matching import (
-    _extract_quotes,
     _normalize,
     _number_match,
-    _verify_source_match,
 )
 
 
@@ -36,37 +34,6 @@ class SearchRecord:
     """Which tool produced this result (e.g. 'get_stock_info')."""
     file_path: str = ""
     """File where result was found (e.g. grep result path)."""
-
-
-@dataclass
-class ValidationResult:
-    """Result of validating output text against search history.
-
-    Returned by :meth:`Fence.validate_output`.
-    """
-
-    found: list[str]
-    """Quoted passages that matched search history."""
-
-    not_found: list[str]
-    """Quoted passages that did NOT match search history."""
-
-    @property
-    def total(self) -> int:
-        """Total number of quoted passages examined."""
-        return len(self.found) + len(self.not_found)
-
-    @property
-    def coverage(self) -> float:
-        """Fraction of quoted passages that matched (0.0 to 1.0)."""
-        if self.total == 0:
-            return 1.0
-        return len(self.found) / self.total
-
-    @property
-    def ok(self) -> bool:
-        """True if all quoted passages matched search history."""
-        return len(self.not_found) == 0
 
 
 class Fence:
@@ -318,8 +285,8 @@ class Fence:
     def link(self, *upstreams: Fence) -> Fence:
         """Declare that this fence can cite evidence from upstream fences.
 
-        When this fence validates evidence (via @enforce, wrap(submit=...), or
-        validate_output()), it checks its OWN search history plus the history
+        When this fence validates evidence (via @enforce or wrap(submit=...)),
+        it checks its OWN search history plus the history
         of all linked upstream fences, transitively.
 
         Can be called multiple times to add more upstreams.
@@ -373,8 +340,6 @@ class Fence:
         fn: Callable | None = None,
         *,
         evidence_param: str = "evidence",
-        claim_param: str | None = None,
-        source_text: str | Callable[[], str] | None = None,
         min_length: int | None = None,
         context: dict | None = None,
     ) -> Callable:
@@ -382,10 +347,11 @@ class Fence:
 
         Before the decorated function executes, validates:
 
-        1. At least one search has been recorded (via ``@fence.track``).
-        2. The ``evidence_param`` value is a substring of a recent search
+        1. The ``claim_in_document`` parameter (if present) exists in the
+           document set via :meth:`set_document`.
+        2. At least one search has been recorded (via ``@fence.track``).
+        3. The ``evidence_param`` value is a substring of a recent search
            result (not semantic — exact character match).
-        3. *(Optional)* The ``claim_param`` value exists in ``source_text``.
 
         If any check fails, the function is **not called**. Instead an
         ``"ERROR: ..."`` string is returned and the rejection is logged.
@@ -406,8 +372,6 @@ class Fence:
             return self._wrap_as_submit(
                 func,
                 evidence_param,
-                claim_param=claim_param,
-                source_text=source_text,
                 min_length=min_length,
                 context=context,
             )
@@ -451,6 +415,53 @@ class Fence:
                     queue.append(upstream)
 
         return records
+
+    # -- Core enforcement checks ---------------------------------------------
+
+    def _check_evidence(
+        self,
+        evidence: str,
+        tool_name: str,
+        *,
+        min_length: int | None = None,
+        context: dict | None = None,
+    ) -> str | None:
+        """Run the three core enforcement checks on evidence.
+
+        1. Search history must exist.
+        2. Evidence must meet minimum length.
+        3. Evidence must match a recent search result.
+
+        Returns the raw error reason on failure (and logs the rejection),
+        or ``None`` on success.
+        """
+        if not self._collect_history():
+            err = (
+                "No search calls recorded. You must call a search "
+                "tool first to find evidence before submitting."
+            )
+            self._log_rejection(tool_name, evidence, err, context)
+            return err
+
+        eff_min = (
+            min_length
+            if min_length is not None
+            else self._min_evidence_length
+        )
+        if len(evidence.strip()) < eff_min:
+            err = (
+                f"Evidence too short (got {len(evidence.strip())} chars, "
+                f"min {eff_min}). Paste actual search output."
+            )
+            self._log_rejection(tool_name, evidence, err, context)
+            return err
+
+        ok, err = self._verify_search_match(evidence)
+        if not ok:
+            self._log_rejection(tool_name, evidence, err, context)
+            return err
+
+        return None
 
     # -- Validation ----------------------------------------------------------
 
@@ -523,10 +534,10 @@ class Fence:
         self._rejections.append(entry)
 
     def save_log(self, path: str | Path) -> None:
-        """Append all rejection records to a JSONL file."""
+        """Write all rejection records to a JSONL file."""
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "a", encoding="utf-8") as f:
+        with open(path, "w", encoding="utf-8") as f:
             for entry in self._rejections:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
@@ -725,45 +736,6 @@ class Fence:
         else:
             raise ValueError(f"role must be 'search' or 'submit', got {role!r}")
 
-    # -- validate_output -------------------------------------------------------
-
-    def validate_output(self, text: str) -> ValidationResult:
-        """Validate output text against search history (soft enforcement).
-
-        Extracts quoted/cited passages from *text* and checks each against
-        the search history.  Returns a :class:`ValidationResult` with
-        ``found``, ``not_found``, and ``coverage`` stats.
-
-        This enables the "soft enforcement" pattern for agents that produce
-        a final report without explicit submit tools.
-
-        Args:
-            text: The agent's output text (e.g. a final report).
-
-        Returns:
-            A :class:`ValidationResult` with match details.
-        """
-        quotes = _extract_quotes(text)
-        all_records = self._collect_history()
-        all_text = "\n".join(r.result_text for r in all_records)
-
-        found: list[str] = []
-        not_found: list[str] = []
-
-        for quote in quotes:
-            normalized = quote.strip()
-            if len(normalized) < 10:
-                # Too short to be meaningful — skip
-                continue
-            if normalized in all_text:
-                found.append(quote)
-            elif _number_match(normalized, all_text):
-                found.append(quote)
-            else:
-                not_found.append(quote)
-
-        return ValidationResult(found=found, not_found=not_found)
-
     # -- Internal wrapping helpers ---------------------------------------------
 
     def _wrap_as_search(self, fn: Callable) -> Callable:
@@ -810,8 +782,6 @@ class Fence:
         fn: Callable,
         evidence_param: str = "evidence",
         *,
-        claim_param: str | None = None,
-        source_text: str | Callable[[], str] | None = None,
         min_length: int | None = None,
         context: dict | None = None,
     ) -> Callable:
@@ -819,58 +789,25 @@ class Fence:
 
         Used internally by both :meth:`enforce` (decorator API) and
         :meth:`wrap_tool` / :meth:`wrap_tools` (programmatic API).
-        The extra keyword arguments (*claim_param*, *source_text*,
-        *min_length*, *context*) are only used by :meth:`enforce`.
         """
         tool_name = _get_tool_name(fn)
 
         def _validate(args: tuple, kwargs: dict) -> str | None:
-            evidence = _resolve_param(fn, evidence_param, args, kwargs)
-
-            if not self._collect_history():
-                err = (
-                    "No search calls recorded. You must call a search "
-                    "tool first to find evidence before submitting."
-                )
-                self._log_rejection(tool_name, evidence, err, context)
-                return f"ERROR: {err}"
-
-            eff_min = (
-                min_length
-                if min_length is not None
-                else self._min_evidence_length
-            )
-            if len(evidence.strip()) < eff_min:
-                err = (
-                    f"Evidence too short (got {len(evidence.strip())} chars, "
-                    f"min {eff_min}). Paste actual search output."
-                )
-                self._log_rejection(tool_name, evidence, err, context)
-                return f"ERROR: {err}"
-
-            ok, err = self._verify_search_match(evidence)
-            if not ok:
-                self._log_rejection(tool_name, evidence, err, context)
-                return f"ERROR: {err}"
-
-            # Optional: claim must exist in source text
-            if claim_param is not None and source_text is not None:
-                claim = _resolve_param(fn, claim_param, args, kwargs)
-                if claim:
-                    src = (
-                        source_text() if callable(source_text) else source_text
-                    )
-                    ok, err = _verify_source_match(claim, src)
-                    if not ok:
-                        self._log_rejection(tool_name, claim, err, context)
-                        return f"ERROR: {err}"
-
-            # Auto: claim_in_document vs fence document
+            # 1. Claim-in-document check (cheap text match)
             cid = _resolve_param(fn, "claim_in_document", args, kwargs)
             if cid:
                 doc_err = self._check_claim_in_document(cid)
                 if doc_err is not None:
                     return doc_err
+
+            # 2. Evidence enforcement (history + length + search match)
+            evidence = _resolve_param(fn, evidence_param, args, kwargs)
+
+            err = self._check_evidence(
+                evidence, tool_name, min_length=min_length, context=context,
+            )
+            if err is not None:
+                return f"ERROR: {err}"
 
             return None
 

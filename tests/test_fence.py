@@ -4,7 +4,7 @@ import asyncio
 import inspect
 import json
 
-from audit_fence import Fence, ValidationResult, extract_numbers, normalize_number
+from audit_fence import Fence, extract_numbers, normalize_number
 
 
 # -- Rejection: no search history -------------------------------------------
@@ -102,77 +102,6 @@ def test_accept_grep_format_evidence():
     )
     assert isinstance(result, dict)
     assert result["status"] == "ok"
-
-
-# -- Source text match -------------------------------------------------------
-
-def test_source_text_match_pass():
-    report = "The company reported revenue of $5.1B, up 26% year over year."
-    fence = Fence()
-
-    @fence.track
-    def search(query: str) -> str:
-        return "line 1: reported revenue of $5.1B in Q4"
-
-    @fence.enforce(claim_param="claim", source_text=report)
-    def submit(claim: str, evidence: str) -> dict:
-        return {"claim": claim, "status": "ok"}
-
-    search("revenue")
-    result = submit(claim="revenue of $5.1B", evidence="reported revenue of $5.1B in Q4")
-    assert isinstance(result, dict)
-    assert result["status"] == "ok"
-
-
-def test_source_text_match_fail():
-    report = "The company reported revenue of $5.1B."
-    fence = Fence()
-
-    @fence.track
-    def search(query: str) -> str:
-        return "line 1: reported revenue of $5.1B in Q4"
-
-    @fence.enforce(claim_param="claim", source_text=report)
-    def submit(claim: str, evidence: str) -> dict:
-        return {"claim": claim}
-
-    search("revenue")
-    result = submit(claim="revenue of $10B", evidence="reported revenue of $5.1B in Q4")
-    assert "ERROR" in result
-    assert "not found in the source" in result
-
-
-# -- Source text as callable -------------------------------------------------
-
-def test_source_text_callable():
-    texts = {"v1": "Revenue was $5.1B in fiscal year 2025."}
-    fence = Fence()
-
-    @fence.track
-    def search(query: str) -> str:
-        return "line 42: Revenue was $5.1B in fiscal year 2025"
-
-    @fence.enforce(
-        claim_param="claim",
-        source_text=lambda: texts["v1"],
-    )
-    def submit(claim: str, evidence: str) -> dict:
-        return {"claim": claim, "status": "ok"}
-
-    search("revenue")
-    result = submit(
-        claim="Revenue was $5.1B",
-        evidence="Revenue was $5.1B in fiscal year 2025",
-    )
-    assert isinstance(result, dict)
-
-    # Change the source text dynamically
-    texts["v1"] = "Revenue was $3.2B in fiscal year 2025."
-    result = submit(
-        claim="Revenue was $5.1B",
-        evidence="Revenue was $5.1B in fiscal year 2025",
-    )
-    assert "ERROR" in result
 
 
 # -- History window ----------------------------------------------------------
@@ -486,20 +415,15 @@ def test_async_track_sync_enforce():
 
 
 def test_async_enforce_with_params():
-    """Async enforce with custom evidence_param and source_text."""
+    """Async enforce with custom evidence_param."""
     async def _run():
-        report = "The company reported revenue of $5.1B in Q4."
         fence = Fence()
 
         @fence.track
         async def search(query: str) -> str:
             return "line 1: reported revenue of $5.1B in Q4"
 
-        @fence.enforce(
-            evidence_param="grep_output",
-            claim_param="claim",
-            source_text=report,
-        )
+        @fence.enforce(evidence_param="grep_output")
         async def submit(claim: str, grep_output: str) -> dict:
             return {"claim": claim, "status": "ok"}
 
@@ -1283,94 +1207,3 @@ def test_track_all_with_explicit_patterns():
     assert len(fence.history) == 1
 
 
-# ============================================================================
-# validate_output()
-# ============================================================================
-
-
-def test_validate_output_found():
-    """validate_output should find quoted passages that match search history."""
-    fence = Fence()
-
-    @fence.track
-    def search(query: str) -> str:
-        return "The company reported revenue of $5.1B in fiscal year 2025."
-
-    search("revenue")
-
-    result = fence.validate_output(
-        'The report states "The company reported revenue of $5.1B in fiscal year 2025." as a key finding.'
-    )
-
-    assert isinstance(result, ValidationResult)
-    assert len(result.found) == 1
-    assert len(result.not_found) == 0
-    assert result.coverage == 1.0
-    assert result.ok is True
-
-
-def test_validate_output_not_found():
-    """validate_output should flag quoted passages that don't match."""
-    fence = Fence()
-
-    @fence.track
-    def search(query: str) -> str:
-        return "The company reported revenue of $5.1B."
-
-    search("revenue")
-
-    result = fence.validate_output(
-        'The report claims "Operating margins expanded to 42% this quarter" which is notable.'
-    )
-
-    assert len(result.found) == 0
-    assert len(result.not_found) == 1
-    assert result.coverage == 0.0
-    assert result.ok is False
-
-
-def test_validate_output_partial():
-    """validate_output should handle a mix of found and not-found passages."""
-    fence = Fence()
-
-    @fence.track
-    def search(query: str) -> str:
-        return "Revenue was $5.1B in FY2025. Operating margin was 32.1%."
-
-    search("financials")
-
-    result = fence.validate_output(
-        'Two findings: "Revenue was $5.1B in FY2025" is supported, '
-        'but "Net income doubled year over year" has no source.'
-    )
-
-    assert len(result.found) == 1
-    assert len(result.not_found) == 1
-    assert result.total == 2
-    assert result.coverage == 0.5
-    assert result.ok is False
-
-
-def test_validate_output_empty_text():
-    """validate_output with no quotes should return ok=True with zero total."""
-    fence = Fence()
-    result = fence.validate_output("No quoted passages here at all.")
-    assert result.total == 0
-    assert result.ok is True
-    assert result.coverage == 1.0
-
-
-def test_validate_output_short_quotes_skipped():
-    """Quoted passages shorter than 10 chars should be skipped."""
-    fence = Fence()
-
-    @fence.track
-    def search(query: str) -> str:
-        return "some data"
-
-    search("test")
-
-    result = fence.validate_output('He said "yes" and "no" but not much else.')
-    # "yes" and "no" are too short to validate
-    assert result.total == 0
-    assert result.ok is True

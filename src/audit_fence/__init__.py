@@ -3,7 +3,6 @@
 from .fence import (
     Fence,
     SearchRecord,
-    ValidationResult,
 )
 from .matching import extract_numbers, normalize_number
 from .group import FenceGroup
@@ -24,9 +23,8 @@ __all__ = [
     "SearchRecord",
     "Snapshot",
     "ToolCallRecord",
-    "ValidationResult",
     "create_record_tool",
     "extract_numbers",
     "normalize_number",
 ]
-__version__ = "0.8.0"
+__version__ = "0.9.0"

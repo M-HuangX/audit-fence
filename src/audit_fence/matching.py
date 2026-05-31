@@ -16,51 +16,14 @@ import re
 
 def _normalize(text: str) -> str:
     """Normalize text for substring comparison: strip markdown, collapse whitespace, lowercase."""
-    text = re.sub(r"\*\*|__|\*|_|`|~~", "", text)  # bold, italic, code, strikethrough
+    text = re.sub(r"\*\*|__|\*|`|~~", "", text)  # bold, code, strikethrough
+    text = re.sub(r"(?<!\w)_|_(?!\w)", "", text)  # markdown italic underscores (keep word-internal: total_revenue)
     text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)  # [text](url) → text
     text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)  # heading markers
     text = re.sub(r"\|", " ", text)  # table pipes
     text = re.sub(r"[—–]", "-", text)  # em/en dashes → hyphen
     text = re.sub(r"\s+", " ", text)
     return text.strip().lower()
-
-
-# ---------------------------------------------------------------------------
-# Source verification
-# ---------------------------------------------------------------------------
-
-def _verify_source_match(claim: str, source_text: str) -> tuple[bool, str]:
-    """Verify that claim text exists as a substring in the source document."""
-    if not claim or not source_text:
-        return True, ""
-
-    norm_claim = _normalize(claim)
-    norm_source = _normalize(source_text)
-
-    if norm_claim in norm_source:
-        return True, ""
-
-    return False, (
-        "Claim text not found in the source document. "
-        "Copy the EXACT text from the source."
-    )
-
-
-# ---------------------------------------------------------------------------
-# Quote extraction
-# ---------------------------------------------------------------------------
-
-# Regex to extract quoted passages: "..." or '...' (at least 10 chars inside)
-_QUOTE_PATTERN = re.compile(r'["\u201c]([^"\u201d]{10,})["\u201d]')
-
-
-def _extract_quotes(text: str) -> list[str]:
-    """Extract quoted passages from text for validation.
-
-    Looks for double-quoted strings (ASCII ``"`` or Unicode curly quotes)
-    that are at least 10 characters long.
-    """
-    return [m.group(1) for m in _QUOTE_PATTERN.finditer(text)]
 
 
 # ---------------------------------------------------------------------------

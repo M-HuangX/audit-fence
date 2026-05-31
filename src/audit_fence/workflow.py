@@ -240,29 +240,8 @@ def create_record_tool(
 
         # Search enforcement (skippable via skip_enforcement predicate)
         if not _should_skip(kwargs):
-            if not fence._collect_history():
-                err = (
-                    "No search calls recorded. You must call a search "
-                    "tool first to find evidence before submitting."
-                )
-                fence._log_rejection(name, evidence, err)
-                if _on_reject is not None:
-                    _on_reject(name, evidence, err)
-                return f"ERROR: {err}"
-
-            if len(evidence.strip()) < fence._min_evidence_length:
-                err = (
-                    f"Evidence too short (got {len(evidence.strip())} chars, "
-                    f"min {fence._min_evidence_length}). Paste actual search output."
-                )
-                fence._log_rejection(name, evidence, err)
-                if _on_reject is not None:
-                    _on_reject(name, evidence, err)
-                return f"ERROR: {err}"
-
-            ok, err = fence._verify_search_match(evidence)
-            if not ok:
-                fence._log_rejection(name, evidence, err)
+            err = fence._check_evidence(evidence, name)
+            if err is not None:
                 if _on_reject is not None:
                     _on_reject(name, evidence, err)
                 return f"ERROR: {err}"

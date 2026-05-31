@@ -14,6 +14,7 @@ The handler is instantiated via :meth:`Snapshot.config` or
 
 from __future__ import annotations
 
+import threading
 import time
 from typing import Any
 
@@ -58,6 +59,7 @@ class SnapshotHandler(BaseCallbackHandler):
         self._writer = writer
         self._agent = agent
         self._pending: dict[str, dict] = {}
+        self._lock = threading.Lock()
 
     def on_tool_start(
         self,
@@ -77,11 +79,12 @@ class SnapshotHandler(BaseCallbackHandler):
             id_parts = serialized.get("id", [])
             tool_name = id_parts[-1] if id_parts else "unknown"
 
-        self._pending[str(run_id)] = {
-            "tool": tool_name,
-            "input": inputs if inputs is not None else input_str,
-            "start_time": time.time(),
-        }
+        with self._lock:
+            self._pending[str(run_id)] = {
+                "tool": tool_name,
+                "input": inputs if inputs is not None else input_str,
+                "start_time": time.time(),
+            }
 
     def on_tool_end(
         self,
@@ -93,7 +96,8 @@ class SnapshotHandler(BaseCallbackHandler):
     ) -> None:
         """Called when a tool finishes successfully."""
         rid = str(run_id)
-        entry = self._pending.pop(rid, None)
+        with self._lock:
+            entry = self._pending.pop(rid, None)
         if entry is None:
             return
 
@@ -121,7 +125,8 @@ class SnapshotHandler(BaseCallbackHandler):
     ) -> None:
         """Called when a tool raises an exception."""
         rid = str(run_id)
-        entry = self._pending.pop(rid, None)
+        with self._lock:
+            entry = self._pending.pop(rid, None)
         if entry is None:
             return
 
