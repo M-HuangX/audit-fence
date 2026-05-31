@@ -17,19 +17,23 @@ from __future__ import annotations
 import threading
 import time
 from typing import Any
+from uuid import UUID
 
 try:
     from langchain_core.callbacks import BaseCallbackHandler
 except ImportError:
-    raise ImportError(
-        "SnapshotHandler requires langchain-core. "
-        "Install with: pip install langchain-core"
-    )
-
-from uuid import UUID
+    BaseCallbackHandler = None  # type: ignore[assignment,misc]
 
 
-class SnapshotHandler(BaseCallbackHandler):
+def _require_langchain() -> None:
+    if BaseCallbackHandler is None:
+        raise ImportError(
+            "SnapshotHandler requires langchain-core. "
+            "Install with: pip install langchain-core"
+        )
+
+
+class SnapshotHandler(BaseCallbackHandler or object):  # type: ignore[misc]
     """LangGraph callback handler that captures tool call I/O.
 
     Designed to be passed via ``config={"callbacks": [handler]}``.
@@ -55,6 +59,7 @@ class SnapshotHandler(BaseCallbackHandler):
             writer: An :class:`~audit_fence.snapshot._AgentWriter` instance.
             agent: Agent name (for logging / identification).
         """
+        _require_langchain()
         super().__init__()
         self._writer = writer
         self._agent = agent

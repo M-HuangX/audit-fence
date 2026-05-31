@@ -217,7 +217,8 @@ def main():
         return record
 
     # Record tool with:
-    # - skip_enforcement for not-found/derived findings
+    # - finding="not-found" auto-skips enforcement (built-in)
+    # - skip_enforcement for derived findings
     # - enrich hook for tool call resolution (can reject)
     # - on_record callback for real-time notification
     # - domain-specific extra fields routed to metadata
@@ -231,7 +232,7 @@ def main():
             "grep_line",     # → ClaimRecord.metadata["grep_line"] (unknown → metadata)
             "output_line",   # → ClaimRecord.metadata["output_line"] (unknown → metadata)
         ],
-        skip_enforcement={"finding": ["not-found", "derived"]},
+        skip_enforcement={"finding": ["derived"]},
         enrich=enrich_r1,
         on_record=lambda r: print(f"  [R1] Recorded #{r.id}: [{r.finding}] {r.claim[:50]}"),
         on_reject=lambda t, c, reason: print(f"  [R1] REJECTED: {reason[:60]}"),

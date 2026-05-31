@@ -420,11 +420,9 @@ def test_sandbox_kwargs_forwarded():
 
 
 def test_prompts_dict():
-    """All 3 templates should exist in PROMPTS dict."""
+    """PROMPTS dict should contain verify_claims template."""
     assert "verify_claims" in PROMPTS
-    assert "find_evidence" in PROMPTS
-    assert "cross_reference" in PROMPTS
-    assert len(PROMPTS) == 3
+    assert len(PROMPTS) == 1
 
 
 def test_prompt_format():

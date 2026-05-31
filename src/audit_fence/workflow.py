@@ -111,14 +111,14 @@ def create_record_tool(
             Unrecognized fields are stored in the record's ``metadata``
             dict, so domain-specific data is preserved without schema
             changes.
-        skip_enforcement: Conditions under which search enforcement is
-            skipped.  Two forms are accepted:
+        skip_enforcement: Additional conditions under which search
+            enforcement is skipped.  Note: ``finding="not-found"`` always
+            skips automatically (no configuration needed).  Two forms:
 
             * **dict** — ``{field_name: [values]}``.  Search enforcement
               is skipped when *any* field in the record kwargs matches one
               of the listed values.  Example::
 
-                  skip_enforcement={"finding": ["not-found", "derived"]}
                   skip_enforcement={"source_type": ["kb", "web", "derived"]}
 
             * **callable** — ``fn(kwargs) -> bool``.  Receives the full
@@ -236,10 +236,13 @@ def create_record_tool(
             if err is not None:
                 if _on_reject is not None:
                     _on_reject(name, claim_in_document, err)
-                return err
+                return f"ERROR: {err}"
 
-        # Search enforcement (skippable via skip_enforcement predicate)
-        if not _should_skip(kwargs):
+        # Search enforcement:
+        # - "not-found" findings skip by definition (no evidence to match)
+        # - User-provided skip_enforcement predicate
+        finding = kwargs.get("finding", "")
+        if finding != "not-found" and not _should_skip(kwargs):
             err = fence._check_evidence(evidence, name)
             if err is not None:
                 if _on_reject is not None:

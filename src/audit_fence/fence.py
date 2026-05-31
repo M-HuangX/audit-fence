@@ -278,7 +278,7 @@ class Fence:
             "Copy the EXACT text."
         )
         self._log_rejection("claim_in_document", claim_text, err)
-        return f"ERROR: {err}"
+        return err
 
     # -- Linking -------------------------------------------------------------
 
@@ -798,7 +798,7 @@ class Fence:
             if cid:
                 doc_err = self._check_claim_in_document(cid)
                 if doc_err is not None:
-                    return doc_err
+                    return f"ERROR: {doc_err}"
 
             # 2. Evidence enforcement (history + length + search match)
             evidence = _resolve_param(fn, evidence_param, args, kwargs)
